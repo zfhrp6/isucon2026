@@ -120,3 +120,20 @@ go tool pprof -top -cum -nodefraction=0 -nodecount=0 \
 | `cpu-8.pprof` | `9a188226f370f59443d3e2c7a09ce9ff5278c13a12e673b93a6fc944a9691216` |
 
 CPU profile取得scriptの30秒窓9本目はservice restore時に切断され、不完全ファイルを削除した。rawの完全な8本とは区別する。この分析は一度のprofileであり、再現性や得点効果を示さない。次runではscoring timestampとprofile window、effective artifact/config、activity success/score、CPU全体とDB waitを相関付けてから実装採否を判断する。
+
+## HMAC状態再利用後の追加走行
+
+上記本文・hash表は初回走行である。`69d6365`統合後に別走行でCPU 8本とallocsを取得した。データは本体workspaceのGit管理外 `logs/pprof/20261031T064426Z.hmac-reuse-20261031T064345Z.arLfmV/` にあり、`measurement.json`にsource HEAD `45e50bbeb59b115693455569047e6cc9bccba4d7`、Go source fileのdigest、binary/profileのhash、復元結果を保存した。診断binary SHA-256は`7693c4b635b71469cfe43ce51873fad5408a553a11d8472fa2f9a6ac4e4e41f6`。復元後の稼働中実行ファイルは導入前の`f26d9bd2fab7d5998e6e540afa21286c165af03cd5e84cafa8d7731804036eae`と一致し、service active、6060閉鎖、API直結/nginx経由401を確認した。
+
+活動の強いCPU profile 2〜5（各約30秒、UTC開始06:44:58〜06:46:31）を合算した観測値を示す。全体を公式採点フェーズと同定していない。異なる走行の処理量・入力・採点区間が未対応なので、下表は統制された高速化率の比較ではない。
+
+| CPU samples | 初回（3〜6） | 追加走行（2〜5） |
+|---|---:|---:|
+| 全体 | 107.78s | 73.42s |
+| `imageSignature` subtree | 68.18s (63.26%) | 38.99s (53.11%) |
+| `crypto/hmac.New` subtree（署名の内数） | 31.52s | .07s |
+| `image/jpeg.Decode` subtree | 18.93s (17.56%) | 16.93s (23.06%) |
+
+`pass: true`、score 11953はユーザー報告。ベンチ終了連絡後の`allocs-final.pprof`から`allocs-before.pprof`を引くと、pprof表示の推定累積割り当ては8682.09MB、そのうち`io.ReadAll`が3986.10MB (45.91%)、同関数への経路ではプロフィール画像PUTが3708.17MB (93.03%)だった。推定累積割り当てはGCの反映遅延やbuffer拡張を含み、瞬間的なheap/RSSや受信bodyの総量ではない。CPU 4区間とは採取範囲が異なり、初回にはallocsの比較対象もない。これだけでbody異常や502の原因を特定しない。
+
+再集計はこの追加走行の保存binaryとCPU 2〜5に対する`go tool pprof -top -cum`、割り当ては`go tool pprof -alloc_space -base <allocs-before.pprof> <isureal-diagnostic> <allocs-final.pprof>`で行う。CPU合算は`cpu-active.pprof`、割り当ての出力は`allocs-delta-top-cum.txt`に保存した。署名キャッシュは[issue 34](34-response-image-signature-reuse.md)、画像読み込みとJPEG検証キャッシュは[issue 22](22-jpeg-dimension-preflight.md)を参照する。

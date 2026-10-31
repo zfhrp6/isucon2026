@@ -58,23 +58,23 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [14 投稿期間ロック競合](14-posting-window-lock-investigation.md) | 調査中（`feat/14` 共有ロック案あり、未統合・採点効果未確認） | 大（仮説） | [05:52:00,05:55:00) UTCに取得までの待機164件、最大3.926秒 |
 | [15 空フィード早期判定](15-empty-feed-short-circuit.md) | 一部対応済み（未投稿時の早期空応答。追加条件は未計測） | 小（残余仮説） | 未計測 |
 | [16 認可読み取りスコープ](16-scoped-authorization-reads.md) | 対応中（`feat/16` の`4844488`、未統合・HTTP受入確認待ち） | 中（仮説） | 未計測 |
-| [17 画像署名CPU](17-image-signature-cpu.md) | 対応中（state/buffer再利用HEAD統合、負荷比較待ち） | 中（仮説） | 旧実装の活動4区間でCPU samples68.18/107.78秒（63.26%）、現実装の効果とは別 |
+| [17 画像署名CPU](17-image-signature-cpu.md) | 対応中（state/buffer再利用HEAD統合、同条件比較待ち） | 中（仮説） | 追加走行で署名38.99/73.42秒、PASS・11953点（ユーザー報告、改善幅未確定） |
 | [18 usersテーブルロック](18-users-table-lock-investigation.md) | 調査中（待機を追加観測、blocking関係未確認） | 中（仮説） | [05:52:00,05:55:00) UTCに取得までの待機：行61件、テーブル21件 |
 | [19 初期データ復元](19-initial-data-reset-restoration.md) | 未着手 | 大（失敗防止仮説） | 未計測 |
 | [20 IP ban初期化整合性](20-ip-ban-init-consistency.md) | 未着手 | 小（正しさ仮説） | 未計測 |
 | [21 残る書き込み往復](21-remaining-write-roundtrips.md) | 未着手 | 中（仮説） | 未計測 |
-| [22 JPEG寸法事前判定](22-jpeg-dimension-preflight.md) | 調査中（create-post decode寄与確認） | 小（仮説） | JPEG decode18.93/107.78秒（17.56%）、大半はcreate-post、改善効果未計測 |
+| [22 画像読み込み・JPEG検証](22-jpeg-dimension-preflight.md) | 調査中（早期検証・読み込み改善・検証結果cache案） | 小（仮説） | 追加走行でJPEG CPU23.06%、io.ReadAllが推定累積割当45.91%。破損拒否を厳守 |
 | [23 デプロイ来歴](23-deployment-provenance.md) | 未着手 | 中（再現性仮説） | 未計測 |
 | [24 採点経路計測](24-scoring-path-measurement.md) | 調査中 | 大（調査価値） | 未計測 |
 | [25 DB接続再利用](25-db-connection-reuse.md) | 対応中（idle16暫定値、地域別open配分と反復・DB資源確認待ち） | 中（仮説） | idle8 10750→idle16 11450点（単発走行、処理量差があり因果未確定） |
 | [26 PostgreSQL索引調査](26-postgresql-index-investigation.md) | 調査中（画像索引HEAD統合、その他候補の実測待ち） | 大（仮説） | 代表following計画で既存索引を確認、全負荷寄与は未判定 |
 | [27 PostgreSQL JIT比較](27-postgresql-jit-comparison.md) | 調査中（スコア改善報告あり、比較条件・採否未確定） | 大（仮説） | 局所SQL改善を単発観測、約5000→約7500点（ユーザー報告、条件未確認） |
 | [29 画像本体のローカルキャッシュ](29-image-body-local-cache.md) | 未着手 | 小（仮説・再利用性を先に確認） | [05:52:00,05:56:00) UTCにID再出現12–15%を観測。実hit率ではない |
-| [30 asia1 CPU profile](30-asia1-cpu-profile.md) | 調査済み（stack帰属） | — | 4区間120.017秒、Go CPU samples107.78秒。採点効果未確認 |
+| [30 asia1 CPU profile](30-asia1-cpu-profile.md) | 調査済み（初回・HMAC再利用後のstack帰属） | — | 初回107.78秒、追加走行73.42秒。CPU/allocsの範囲と比較条件は別 |
 | [31 ログレベル入力検証](31-log-level-validation.md) | 未着手 | 小（設定誤り防止） | 不正値がdebug相当になる分岐を確認、性能未計測 |
 | [32 フィード51件目の加工](32-feed-response-page-limit.md) | 未着手 | 小 | 応答構築後に切り詰めるコードを確認、性能未計測 |
 | [33 関係一覧51件目の加工](33-relationship-response-page-limit.md) | 未着手 | 小 | 応答構築後に切り詰めるコードを確認、性能未計測 |
-| [34 応答内の画像署名再利用](34-response-image-signature-reuse.md) | 未着手 | 中（重複率依存） | 同じプロフィールの再署名経路を確認、重複率・効果未計測 |
+| [34 画像署名の重複排除・キャッシュ](34-response-image-signature-reuse.md) | 未着手 | 中（重複率依存） | 要求内再利用を先行。プロセス内cacheはhit率・容量・初期化条件を評価 |
 | [35 固定SQL列リスト](35-fixed-user-sql-projection.md) | 未着手 | 小 | 固定文字列の再生成を確認、CPU/allocs寄与未計測 |
 | [36 現在投稿の逐次取得](36-current-post-read-roundtrips.md) | 未着手 | 小 | 認証以外に3回SELECTするコードを確認、効果未計測 |
 

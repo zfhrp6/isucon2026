@@ -3,21 +3,27 @@ set -euo pipefail
 
 readonly HOST=isu-asia1
 readonly REMOTE_APP=/home/isucon/webapp/go/isureal
-readonly STATE_DIR=/home/isucon/.isureal-pprof-diagnostic
 readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+readonly MAIN_REPO_ROOT=$(git -C "$REPO_ROOT" worktree list --porcelain | sed -n '1{s/^worktree //;p;}')
 
 usage() {
 	cat <<'EOF'
 Usage:
-  ops/pprof-asia1.sh enable
-  ops/pprof-asia1.sh status
-  ops/pprof-asia1.sh capture [windows]
-  ops/pprof-asia1.sh restore
+  ops/pprof-asia1.sh start
+  ops/pprof-asia1.sh stop
+  ops/pprof-asia1.sh capture-current [windows]
+  ops/pprof-asia1.sh enable <measurement-id> <expected-original-sha256>
+  ops/pprof-asia1.sh status <measurement-id>
+  ops/pprof-asia1.sh capture <measurement-id> [windows]
+  ops/pprof-asia1.sh restore <measurement-id>
 
 enable installs a temporary Go binary built with diagnostic_pprof on isu-asia1.
 capture stores consecutive 30-second CPU profiles (1–20 windows) under logs/pprof.
 restore puts back the saved binary, but refuses if another deploy changed it.
+Use a new measurement ID for each deployment; saved backups are retained.
+start/stop manage one locally recorded session under the main worktree's logs/pprof;
+capture-current captures that session. The explicit-ID commands remain available for recovery.
 EOF
 }
 
@@ -26,13 +32,126 @@ die() {
 	exit 2
 }
 
+[[ -n "$MAIN_REPO_ROOT" && -d "$MAIN_REPO_ROOT" ]] || die 'could not determine the main Git worktree; refusing a local fallback'
+local_state_dir="$MAIN_REPO_ROOT/logs/pprof"
+active_file="$local_state_dir/active-session"
+active_lock="$local_state_dir/.active-session.lock"
+
+read_active() {
+	[[ -f "$active_file" && ! -L "$active_file" ]] || die 'no active local pprof session'
+	mapfile -t active_lines < "$active_file"
+	((${#active_lines[@]} == 2)) || die 'active session record is malformed; inspect it manually'
+	active_id=${active_lines[0]}
+	active_hash=${active_lines[1]}
+	[[ "$active_id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ && "$active_hash" =~ ^[0-9a-f]{64}$ ]] || die 'active session record is invalid; inspect it manually'
+}
+
+write_active() {
+	local tmp
+	tmp=$(mktemp "$local_state_dir/.active-session.XXXXXX")
+	chmod 600 "$tmp"
+	printf '%s\n%s\n' "$1" "$2" > "$tmp"
+	mv -f -- "$tmp" "$active_file"
+}
+
+run_low_level() {
+	local subcommand=$1
+	shift
+	bash "$SCRIPT_DIR/$(basename -- "$0")" "$subcommand" "$@"
+}
+
 action=${1:-}
 [[ -n "$action" ]] || { usage >&2; exit 2; }
 shift || true
 
 case "$action" in
+	start)
+		(($# == 0)) || die 'start takes no arguments'
+		mkdir -p -- "$local_state_dir"
+		exec 9>"$active_lock"
+		flock -x 9
+		[[ ! -e "$active_file" && ! -L "$active_file" ]] || die 'an active local session already exists; stop or inspect it first'
+		measurement_id="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+		original_hash=$(ssh "$HOST" "sha256sum '$REMOTE_APP' | cut -d ' ' -f1")
+		[[ "$original_hash" =~ ^[0-9a-f]{64}$ ]] || die 'could not read a valid remote binary SHA-256'
+		# Persist before enabling: if the SSH result is ambiguous, stop still knows which remote state to inspect.
+		write_active "$measurement_id" "$original_hash"
+		if run_low_level enable "$measurement_id" "$original_hash"; then
+			printf 'pprof session %s started\n' "$measurement_id"
+		else
+			printf 'start did not complete; session %s remains recorded for safe recovery\n' "$measurement_id" >&2
+			exit 1
+		fi
+		exit 0
+		;;
+	stop)
+		(($# == 0)) || die 'stop takes no arguments'
+		[[ -d "$local_state_dir" ]] || die 'no active local pprof session'
+		exec 9>"$active_lock"
+		flock -x 9
+		read_active
+		if run_low_level restore "$active_id"; then
+			rm -f -- "$active_file"
+			printf 'pprof session %s stopped; run data and remote backup retained\n' "$active_id"
+		else
+			# Restore can be unnecessary only when enable never changed anything. Confirm disk,
+			# running process, and listener state before removing our recovery pointer.
+			if ssh "$HOST" bash -s -- "$REMOTE_APP" "$active_id" "$active_hash" <<'REMOTE_CHECK'
+set -Eeuo pipefail
+app=$1
+id=$2
+baseline=$3
+state="/home/isucon/.isureal-pprof-diagnostic.$id"
+exec 9>/home/isucon/.isureal-deploy.lock
+flock -x 9
+[[ ! -e "$state" ]] || exit 1
+[[ $(sha256sum "$app" | awk '{print $1}') == "$baseline" ]]
+systemctl is-active --quiet isureal-go
+pid=$(systemctl show --property=MainPID --value isureal-go)
+[[ "$pid" =~ ^[1-9][0-9]*$ ]]
+[[ $(sha256sum "/proc/$pid/exe" | awk '{print $1}') == "$baseline" ]]
+[[ -z $(ss -H -ltn 'sport = :6060') ]]
+[[ $(curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/me) == 401 ]]
+REMOTE_CHECK
+			then
+				rm -f -- "$active_file"
+				printf 'pprof session %s never changed the running binary; recovery pointer cleared\n' "$active_id"
+			else
+				printf 'restore failed and safe no-change state was not proven; recovery record retained\n' >&2
+				exit 1
+			fi
+		fi
+		exit 0
+		;;
+	capture-current)
+		windows=${1:-20}
+		(($# <= 1)) || die 'capture-current takes at most one windows argument'
+		[[ "$windows" =~ ^([1-9]|1[0-9]|20)$ ]] || die 'windows must be 1–20'
+		[[ -d "$local_state_dir" ]] || die 'no active local pprof session'
+		exec 9>"$active_lock"
+		flock -s 9
+		read_active
+		measurement_id=$active_id
+		flock -u 9
+		run_low_level capture "$measurement_id" "$windows"
+		exit $?
+		;;
+esac
+
+case "$action" in
+	enable|status|capture|restore)
+		measurement_id=${1:-}
+		[[ "$measurement_id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] || die 'measurement ID must be 1–64 letters, digits, underscores or hyphens'
+		shift
+		readonly STATE_DIR="/home/isucon/.isureal-pprof-diagnostic.$measurement_id"
+		;;
+esac
+
+case "$action" in
 	enable)
-		(($# == 0)) || die 'enable takes no arguments'
+		(($# == 1)) || die 'enable requires the expected original binary SHA-256'
+		expected_original=$1
+		[[ "$expected_original" =~ ^[0-9a-f]{64}$ ]] || die 'expected original SHA-256 must contain 64 lowercase hex digits'
 		command -v rsync >/dev/null 2>&1 || die 'rsync is required'
 		stage=$(ssh "$HOST" 'mktemp -d /tmp/isureal-pprof.XXXXXX')
 		[[ "$stage" =~ ^/tmp/isureal-pprof\.[A-Za-z0-9]+$ ]] || die 'unexpected remote staging path'
@@ -40,11 +159,12 @@ case "$action" in
 			ssh "$HOST" "rm -rf -- '$stage'" || true
 			die 'source transfer failed'
 		fi
-		ssh "$HOST" bash -s -- "$stage" "$REMOTE_APP" "$STATE_DIR" <<'REMOTE'
+		ssh "$HOST" bash -s -- "$stage" "$REMOTE_APP" "$STATE_DIR" "$expected_original" <<'REMOTE'
 set -Eeuo pipefail
 stage=$1
 app=$2
 state=$3
+expected_original=$4
 backup="$state/original"
 diagnostic="$state/diagnostic"
 changed=false
@@ -58,7 +178,25 @@ cleanup() {
 		if [[ "$changed" == true && -f "$backup" ]]; then
 			cp -p -- "$backup" "$app.rollback.$$"
 			mv -f -- "$app.rollback.$$" "$app"
-			if sudo -n systemctl restart isureal-go && systemctl is-active --quiet isureal-go && [[ $(sha256sum "$app" | awk '{print $1}') == $(cat "$state/original.sha256") ]]; then
+			rollback_ready=false
+			if sudo -n systemctl restart isureal-go && [[ $(sha256sum "$app" | awk '{print $1}') == $(cat "$state/original.sha256") ]]; then
+				for attempt in {1..20}; do
+					if systemctl is-active --quiet isureal-go; then
+						pid=$(systemctl show --property=MainPID --value isureal-go)
+					else
+						pid=
+					fi
+					if [[ "$pid" =~ ^[1-9][0-9]*$ ]] \
+						&& [[ $(sha256sum "/proc/$pid/exe" | awk '{print $1}') == "$(cat "$state/original.sha256")" ]] \
+						&& [[ -z $(ss -H -ltn 'sport = :6060') ]] \
+						&& [[ $(curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/me) == 401 ]]; then
+						rollback_ready=true
+						break
+					fi
+					sleep 0.5
+				done
+			fi
+			if [[ "$rollback_ready" == true ]]; then
 				rm -rf -- "$state"
 			else
 				printf 'automatic rollback needs inspection; saved original remains at %s\n' "$backup" >&2
@@ -74,7 +212,8 @@ trap cleanup EXIT
 umask 077
 [[ ! -e "$state" ]] || { printf 'diagnostic state already exists; inspect and restore it first\n' >&2; exit 1; }
 [[ -f "$app" && ! -L "$app" ]] || { printf 'application binary is not a regular file\n' >&2; exit 1; }
-[[ $(sha256sum "$app" | awk '{print $1}') == 77aa3c8f12cc7842eb7df809da32adcfa4e62218fdb111560e500cfb2f14a3c5 ]] || { printf 'original binary differs from preflight; refusing install\n' >&2; exit 1; }
+[[ $(sha256sum "$app" | awk '{print $1}') == "$expected_original" ]] || { printf 'original binary differs from preflight; refusing install\n' >&2; exit 1; }
+[[ -z $(ss -H -ltn 'sport = :6060') ]] || { printf 'pprof port is already in use; refusing install\n' >&2; exit 1; }
 mkdir -- "$state"
 created_state=true
 cp -p -- "$app" "$backup"
@@ -90,7 +229,15 @@ sudo -n systemctl restart isureal-go
 systemctl is-active --quiet isureal-go
 ready=false
 for attempt in {1..20}; do
-	if curl --fail --silent --max-time 2 http://127.0.0.1:6060/debug/pprof/ >/dev/null 2>&1; then
+	if systemctl is-active --quiet isureal-go; then
+		pid=$(systemctl show --property=MainPID --value isureal-go)
+	else
+		pid=
+	fi
+	if [[ "$pid" =~ ^[1-9][0-9]*$ ]] \
+		&& [[ $(sha256sum "/proc/$pid/exe" | awk '{print $1}') == "$(cat "$state/diagnostic.sha256")" ]] \
+		&& curl --fail --silent --max-time 2 http://127.0.0.1:6060/debug/pprof/ >/dev/null 2>&1 \
+		&& [[ $(curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/me) == 401 ]]; then
 		ready=true
 		break
 	fi
@@ -102,7 +249,7 @@ changed=false
 REMOTE
 		;;
 	status)
-		(($# == 0)) || die 'status takes no arguments'
+		(($# == 0)) || die 'status takes only the measurement ID'
 		ssh "$HOST" bash -s -- "$REMOTE_APP" "$STATE_DIR" <<'REMOTE'
 set -Eeuo pipefail
 app=$1
@@ -111,14 +258,20 @@ if [[ -f "$state/original" && -f "$state/diagnostic.sha256" ]]; then
 	expected=$(cat "$state/diagnostic.sha256")
 	actual=$(sha256sum "$app" | awk '{print $1}')
 	if [[ "$expected" == "$actual" ]]; then
+		systemctl is-active --quiet isureal-go
+		pid=$(systemctl show --property=MainPID --value isureal-go)
+		[[ "$pid" =~ ^[1-9][0-9]*$ ]]
+		[[ $(sha256sum "/proc/$pid/exe" | awk '{print $1}') == "$expected" ]]
 		curl --fail --silent --show-error --max-time 3 http://127.0.0.1:6060/debug/pprof/ >/dev/null
+		[[ $(curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/me) == 401 ]]
 		printf 'diagnostic binary active; pprof reachable on loopback\n'
 	elif [[ -f "$state/original.sha256" && $(cat "$state/original.sha256") == "$actual" ]]; then
 		systemctl is-active --quiet isureal-go
-		if curl --silent --max-time 2 http://127.0.0.1:6060/debug/pprof/ >/dev/null 2>&1; then
-			printf 'original binary installed but pprof port remains reachable\n' >&2
-			exit 1
-		fi
+		pid=$(systemctl show --property=MainPID --value isureal-go)
+		[[ "$pid" =~ ^[1-9][0-9]*$ ]]
+		[[ $(sha256sum "/proc/$pid/exe" | awk '{print $1}') == "$actual" ]]
+		[[ -z $(ss -H -ltn 'sport = :6060') ]]
+		[[ $(curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/me) == 401 ]]
 		printf 'original binary restored; pprof is closed; saved state retained\n'
 	else
 		printf 'diagnostic state exists but running binary differs; restore will refuse\n' >&2
@@ -134,15 +287,33 @@ REMOTE
 		(($# <= 1)) || die 'capture takes at most one argument'
 		[[ "$windows" =~ ^([1-9]|1[0-9]|20)$ ]] || die 'windows must be 1–20'
 		run_id=$(date -u +%Y%m%dT%H%M%SZ)
-		output_root="$REPO_ROOT/logs/pprof"
+		output_root="$MAIN_REPO_ROOT/logs/pprof"
 		mkdir -p -- "$output_root"
-		output_dir=$(mktemp -d "$output_root/$run_id.XXXXXX")
+		output_dir=$(mktemp -d "$output_root/$run_id.$measurement_id.XXXXXX")
+		printf 'Profiles directory: %s\n' "$output_dir"
+		printf '%s\n' "$measurement_id" > "$output_dir/measurement-id.txt"
 		binary_tmp="$output_dir/isureal-diagnostic.tmp.$$"
-		if ! ssh "$HOST" "cat '$STATE_DIR/diagnostic'" > "$binary_tmp"; then
+		if ! ssh "$HOST" bash -s -- "$REMOTE_APP" "$STATE_DIR" > "$binary_tmp" <<'REMOTE'
+set -Eeuo pipefail
+app=$1
+state=$2
+expected=$(cat "$state/diagnostic.sha256")
+[[ $(sha256sum "$app" | awk '{print $1}') == "$expected" ]] || { printf 'current application differs from this measurement\n' >&2; exit 1; }
+[[ $(sha256sum "$state/diagnostic" | awk '{print $1}') == "$expected" ]] || { printf 'saved diagnostic checksum mismatch\n' >&2; exit 1; }
+systemctl is-active --quiet isureal-go
+pid=$(systemctl show --property=MainPID --value isureal-go)
+[[ "$pid" =~ ^[1-9][0-9]*$ ]] || { printf 'service has no main process\n' >&2; exit 1; }
+[[ $(sha256sum "/proc/$pid/exe" | awk '{print $1}') == "$expected" ]] || { printf 'running application differs from this measurement\n' >&2; exit 1; }
+cat "$state/diagnostic"
+REMOTE
+		then
 			rm -f -- "$binary_tmp"
 			die 'could not retrieve diagnostic binary'
 		fi
 		mv -- "$binary_tmp" "$output_dir/isureal-diagnostic"
+		date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$output_dir/capture-start-utc.txt"
+		ssh "$HOST" 'curl --fail --silent --show-error --max-time 10 http://127.0.0.1:6060/debug/pprof/allocs' > "$output_dir/allocs-before.pprof.tmp"
+		mv -- "$output_dir/allocs-before.pprof.tmp" "$output_dir/allocs-before.pprof"
 		for ((window = 1; window <= windows; window++)); do
 			printf 'Capturing CPU profile %d/%d (30s)\n' "$window" "$windows"
 			profile_tmp="$output_dir/cpu-$window.pprof.tmp.$$"
@@ -151,11 +322,13 @@ REMOTE
 				die "CPU profile $window failed"
 			fi
 			mv -- "$profile_tmp" "$output_dir/cpu-$window.pprof"
+			ssh "$HOST" 'curl --fail --silent --show-error --max-time 10 http://127.0.0.1:6060/debug/pprof/allocs' > "$output_dir/allocs-after.pprof.tmp"
+			mv -f -- "$output_dir/allocs-after.pprof.tmp" "$output_dir/allocs-after.pprof"
 		done
 		printf 'Profiles saved under %s\n' "$output_dir"
 		;;
 	restore)
-		(($# == 0)) || die 'restore takes no arguments'
+		(($# == 0)) || die 'restore takes only the measurement ID'
 		ssh "$HOST" bash -s -- "$REMOTE_APP" "$STATE_DIR" <<'REMOTE'
 set -Eeuo pipefail
 app=$1
@@ -177,13 +350,25 @@ elif [[ "$expected_original" != "$actual" ]]; then
 	exit 1
 fi
 sudo -n systemctl restart isureal-go
-systemctl is-active --quiet isureal-go
 restored=$(sha256sum "$app" | awk '{print $1}')
 [[ "$expected_original" == "$restored" ]] || { printf 'restored binary checksum mismatch\n' >&2; exit 1; }
-if curl --silent --max-time 2 http://127.0.0.1:6060/debug/pprof/ >/dev/null 2>&1; then
-	printf 'pprof still reachable after restore; inspect service before retrying\n' >&2
-	exit 1
-fi
+ready=false
+for attempt in {1..20}; do
+	if systemctl is-active --quiet isureal-go; then
+		pid=$(systemctl show --property=MainPID --value isureal-go)
+	else
+		pid=
+	fi
+	if [[ "$pid" =~ ^[1-9][0-9]*$ ]] \
+		&& [[ $(sha256sum "/proc/$pid/exe" | awk '{print $1}') == "$expected_original" ]] \
+		&& [[ -z $(ss -H -ltn 'sport = :6060') ]] \
+		&& [[ $(curl --silent --max-time 2 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/me) == 401 ]]; then
+		ready=true
+		break
+	fi
+	sleep 0.5
+done
+[[ "$ready" == true ]] || { printf 'restored service did not pass binary, API, and pprof checks; retry restore after inspection\n' >&2; exit 1; }
 printf 'original binary restored and verified; saved state retained at %s\n' "$state"
 REMOTE
 		;;
