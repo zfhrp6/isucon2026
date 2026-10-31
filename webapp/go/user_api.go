@@ -89,24 +89,21 @@ func registerHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		// ユーザー名が一意である必要があります。
-		if _, err := tx.ExecContext(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
-			return err
-		}
-		var exists bool
-		if err := tx.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, input.Username); err != nil {
-			return err
-		}
-		if exists {
+		userID := uuid.NewString()
+		var user User
+		err = tx.GetContext(ctx, &user, `
+			INSERT INTO users (id, username, secret_key_hash, display_name, region)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (username) DO NOTHING
+			RETURNING id, username, secret_key_hash, display_name, bio, profile_image_id, region, account_type, status
+		`, userID, input.Username, hex.EncodeToString(hash[:]), input.DisplayName, input.Region)
+		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusConflict, "username_taken")
 		}
-		userID := uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, secret_key_hash, display_name, region) VALUES ($1, $2, $3, $4, $5)`,
-			userID, input.Username, hex.EncodeToString(hash[:]), input.DisplayName, input.Region); err != nil {
+		if err != nil {
 			return err
 		}
-		user, err := getUser(ctx, tx, userID)
-		if err != nil {
+		if err := user.setImageKey(); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
