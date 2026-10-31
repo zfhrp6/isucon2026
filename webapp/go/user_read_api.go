@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
@@ -22,8 +23,10 @@ type searchUsersResponse struct {
 	HasMore bool                       `json:"hasMore"`
 }
 
-func normalizeSearchText(value string) string {
-	return norm.NFC.String(cases.Fold().String(norm.NFC.String(value)))
+type userSearchCandidate struct {
+	ID          string `db:"id"`
+	Username    string `db:"username"`
+	DisplayName string `db:"display_name"`
 }
 
 func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
@@ -40,35 +43,88 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		viewer := GetSession(c).UserID
-		var users []User
-		if err := h.DB.SelectContext(ctx, &users, `SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE status='active' AND id<>$1 AND ($2='' OR (username,id)>($2,$3)) ORDER BY username, id`, viewer, input.BeforeUsername, input.BeforeID); err != nil {
-			return err
-		}
-		blocked, err := getBlockedUserIDs(ctx, h.DB, viewer)
+		tx, err := h.DB.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 		if err != nil {
 			return err
 		}
-		query := normalizeSearchText(input.Q)
-		items := make([]relationshipUserResponse, 0)
-		hasMore := false
-		for _, user := range users {
-			if !strings.Contains(normalizeSearchText(user.Username), query) && !strings.Contains(normalizeSearchText(user.DisplayName), query) {
-				continue
-			}
-			if blocked[user.ID] {
-				continue
-			}
-			if len(items) == 50 {
-				hasMore = true
-				break
-			}
-			if err := user.setImageKey(); err != nil {
+		defer tx.Rollback()
+		fold := cases.Fold()
+		normalize := func(value string) string {
+			return norm.NFC.String(fold.String(norm.NFC.String(value)))
+		}
+		query := normalize(input.Q)
+		matchingIDs := make([]string, 0, 51)
+		// Stream only fields needed for matching; the repeatable-read snapshot keeps the later detail fetch consistent with these candidates.
+		rows, err := tx.QueryxContext(ctx, `
+  SELECT u.id, u.username, u.display_name
+  FROM users u
+  WHERE u.status='active' AND u.id<>$1
+    AND ($2='' OR (u.username,u.id)>($2,$3))
+    AND NOT EXISTS (
+      SELECT 1 FROM block_relations b
+      WHERE (b.blocker_id=$1 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=$1)
+    )
+		ORDER BY u.username, u.id`, viewer, input.BeforeUsername, input.BeforeID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var candidate userSearchCandidate
+			if err := rows.StructScan(&candidate); err != nil {
+				rows.Close()
 				return err
 			}
-			if user.AccountType != "certified_public" {
-				user.Bio = ""
+			if !strings.Contains(normalize(candidate.Username), query) && !strings.Contains(normalize(candidate.DisplayName), query) {
+				continue
 			}
-			items = append(items, newRelationshipUserResponse(user))
+			matchingIDs = append(matchingIDs, candidate.ID)
+			if len(matchingIDs) == 51 {
+				break
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		hasMore := len(matchingIDs) > 50
+		if hasMore {
+			matchingIDs = matchingIDs[:50]
+		}
+		items := make([]relationshipUserResponse, 0, len(matchingIDs))
+		if len(matchingIDs) != 0 {
+			query, args, err := sqlx.In(`
+  SELECT `+strings.Join(userColumns, ", ")+`
+  FROM users WHERE id IN (?)`, matchingIDs)
+			if err != nil {
+				return err
+			}
+			var users []User
+			if err := tx.SelectContext(ctx, &users, sqlx.Rebind(sqlx.DOLLAR, query), args...); err != nil {
+				return err
+			}
+			usersByID := make(map[string]User, len(users))
+			for _, user := range users {
+				usersByID[user.ID] = user
+			}
+			for _, id := range matchingIDs {
+				user, ok := usersByID[id]
+				if !ok {
+					return errors.New("user search candidate missing from repeatable-read snapshot")
+				}
+				if err := user.setImageKey(); err != nil {
+					return err
+				}
+				if user.AccountType != "certified_public" {
+					user.Bio = ""
+				}
+				items = append(items, newRelationshipUserResponse(user))
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
 		}
 		return c.JSON(http.StatusOK, searchUsersResponse{Items: items, HasMore: hasMore})
 	}
