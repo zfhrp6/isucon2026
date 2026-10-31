@@ -20,3 +20,6 @@ official_resource/
 /env.sh
 /webapp/env.sh
 
+# Retrieved nginx logs
+/logs/nginx/
+
