@@ -2,12 +2,12 @@
 
 ## 管理状況
 
-- 状態: **未着手**
-- 対応範囲・完了条件: 認証照会と索引の必要性を実測してから変更する。完了条件は照会計画/時間と認証契約の比較。
+- 状態: **調査中（索引候補を確認、実測未）**
+- 対応範囲・完了条件: [issue 26](26-postgresql-index-investigation.md)の測定結果に基づき、必要なら認証照会の索引を改善する。完了条件は認証契約を保った実装と、照会計画・認証性能の比較を記録すること。
 - 実装コミット/記録: 実装記録なし。
 - 検証済み/未検証: コードとスキーマの候補を記載。実データ計画・件数別測定は未検証。
 - 期待効果: **大（推定）**。実測効果: **未計測**。
-- 関連issue: [08 query indexes](08-query-indexes.md), [13 server settings](13-server-settings.md)
+- 関連issue: [08 query indexes](08-query-indexes.md), [13 server settings](13-server-settings.md), [26 PostgreSQL索引調査](26-postgresql-index-investigation.md)
 
 ## 採点への寄与
 
@@ -15,11 +15,11 @@
 
 ## 現状
 
-[`getSessionFromHeader`](../webapp/go/session.go#L35) は `login_sessions.token_hash` と active 状態、ユーザー状態をJOINして照会する。スキーマでは `login_sessions.id` の主キーしか定義されず、`token_hash` 索引がない（[`001-schema.sql`](../webapp/sql/001-schema.sql#L96)）。利用者・セッション数が増えると検索コストが増す可能性がある。
+[`getSessionFromHeader`](../webapp/go/session.go#L35) は `login_sessions.token_hash` とactive状態、ユーザー状態をJOINして照会する。現HEADの[`001-schema.sql`](../webapp/sql/001-schema.sql#L96)では `login_sessions.id` の主キー以外に `token_hash` 索引が定義されていない。これは初期スキーマの事実で、実DBの現在の索引状態や照会コストは別途確認が必要。利用者・セッション数が増えたときの全表走査・照会時間への影響も未計測。
 
 ## 改善方針
 
-現行のセッション照会に `token_hash` 索引を追加し、ベンチ規模のデータで実行計画と認証APIの時間を比較する。必要ならactiveセッションの一意性をデータで確認してから部分索引を検討する。
+まず[issue 26](26-postgresql-index-investigation.md)の手順で実DBの索引・統計・代表クエリを確認し、`token_hash` の検索に実害があるかを評価する。測定で必要性が確認された場合は、非一意索引または `active = true` の部分索引を候補に実装し、認証契約と実行計画・認証性能を比較する。一意制約の追加は検索索引の検討から切り離し、公開仕様・既存データとの整合性に独立した根拠がある場合に限って別途判断する。
 
 ## 制約・リスク
 
@@ -29,4 +29,4 @@
 
 ## 検証・受け入れ条件
 
-有効・無効・期限切れ相当・退会ユーザーの認証結果が従来と一致する。`EXPLAIN (ANALYZE, BUFFERS)` とセッション件数の増加時の照会時間を比較する。初期化後、追試再起動後も正常にログインできる。
+有効・無効・期限切れ相当・退会ユーザーの認証結果が従来と一致する。索引追加前後で代表件数の実行計画、DBの実行統計、認証API時間を比較し、書込/初期化費用も確認する。初期化後、追試再起動後も正常にログインできる。調査手順と採否の条件は[issue 26](26-postgresql-index-investigation.md)を参照。
