@@ -43,10 +43,14 @@ DB接続のidle再利用は[issue 25](25-db-connection-reuse.md)、配備物と�
 | 条件付き | debugログをinfoへ下げる | GET debug記録とjournal出力の費用はあり得るが、実際のI/O比率は未測定。ログガード・必要ログ・調査可能性を保ち、負荷とログ要件を確認した場合のみ比較する。 |
 | 条件付き | SSE timeoutとheartbeatを見直す | 60秒timeoutとheartbeatなし、通知timeout記録がある。負荷中に採点対象通知が失われ再接続負荷を生んだと相関できる場合に限り、read timeout延長とheartbeatを比較する。timeoutを削除するだけの対応はしない。 |
 
+## 実測が得られた単独比較候補
+
+[issue 27](27-postgresql-jit-comparison.md)の単発代表SQLではJIT offのexecution短縮を観測したが、cache状態が異なり得点/ベンチ効果は未計測。JITだけを切り替えた負荷比較候補として扱い、比較が終わるまでは永続設定を変更しない。
+
 ## 後回しにする候補
 
 - `work_mem`増加：現在temp spillの証拠なし。接続数と同時実行数によるメモリ増を先に評価する。
-- WALサイズ/頻度、JIT、`effective_io_concurrency`、`random_page_cost`：現在の負荷で不適切と示す証拠がない。計測なしの変更は後回し。
+- WALサイズ/頻度、`effective_io_concurrency`、`random_page_cost`：現在の負荷で不適切と示す証拠がない。計測なしの変更は後回し。
 - worker接続枠、gzip/JSON圧縮：飽和やCPU・帯域の比較証拠なし。圧縮はCPU費用も測ってから判断する。
 
 ## 制約・受け入れ条件
