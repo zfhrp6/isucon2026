@@ -75,6 +75,10 @@ func getRelationshipsHandler(h *HandlerContext) echo.HandlerFunc {
   `, actor, input.BeforeUpdatedAt, input.BeforeID); err != nil {
 			return err
 		}
+		hasMore := len(records) > 50
+		if hasMore {
+			records = records[:50]
+		}
 		items := make([]relationshipResponse, 0, len(records))
 		for _, record := range records {
 			user := record.User
@@ -92,10 +96,6 @@ func getRelationshipsHandler(h *HandlerContext) echo.HandlerFunc {
 				RelationID: record.ID, Status: status, UpdatedAt: record.UpdatedAt,
 				User: newRelationshipUserResponse(user),
 			})
-		}
-		hasMore := len(items) > 50
-		if hasMore {
-			items = items[:50]
 		}
 		return c.JSON(http.StatusOK, getRelationshipsResponse{Items: items, HasMore: hasMore})
 	}
