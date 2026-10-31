@@ -114,7 +114,13 @@ func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items [
 		itemByPostID[items[i].ID] = &items[i]
 	}
 
-	query, args, err := sqlx.In(`AND r.post_id IN (?) ORDER BY r.created_at DESC, r.id DESC`, postIDs)
+	query, args, err := sqlx.In(`AND r.id IN (
+    SELECT ranked.id FROM (
+      SELECT r2.id, row_number() OVER (PARTITION BY r2.post_id ORDER BY r2.created_at DESC, r2.id DESC) AS position
+      FROM realmojis r2 JOIN users u2 ON u2.id=r2.reactor_id AND u2.status='active'
+      WHERE r2.replaced_at IS NULL AND r2.deleted_at IS NULL AND r2.post_id IN (?)
+    ) ranked WHERE ranked.position <= 50
+  ) ORDER BY r.created_at DESC, r.id DESC`, postIDs)
 	if err != nil {
 		return err
 	}
@@ -129,7 +135,13 @@ func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items [
 		}
 	}
 
-	query, args, err = sqlx.In(`AND c.post_id IN (?) ORDER BY c.created_at, c.id`, postIDs)
+	query, args, err = sqlx.In(`AND c.id IN (
+    SELECT ranked.id FROM (
+      SELECT c2.id, row_number() OVER (PARTITION BY c2.post_id ORDER BY c2.created_at, c2.id) AS position
+      FROM comments c2 JOIN users u2 ON u2.id=c2.author_id AND u2.status='active'
+      WHERE c2.deleted_at IS NULL AND c2.post_id IN (?)
+    ) ranked WHERE ranked.position <= 50
+  ) ORDER BY c.created_at, c.id`, postIDs)
 	if err != nil {
 		return err
 	}
