@@ -16,6 +16,7 @@
 ## 調査・制約
 
 - source tree digest、アーティファクトhash、設定digest、schema/index適用状態、ベンチ条件をどう記録するか検討する。
+- [性能改善候補の計測ガイド](measurement-guide.md)に従い、run_id、地域・件数・得点、初期化/検証/負荷/終了のUTC半開区間、統計snapshot世代も対応付ける。時刻差の比較にはmonotonic経過時間とホスト間clock offsetを併記する。
 - dirty treeも識別できるようにし、秘密設定値は記録対象にしない。
 - deploy.shがSQLを適用したと誤認させない。競技DBへのschema変更やdeploy方式拡張は本issueだけで承認された範囲ではない。
 

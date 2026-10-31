@@ -15,9 +15,10 @@
 
 ## 調査・制約
 
+- 共通のrun情報・集計label・計測の解釈境界は[性能改善候補の計測ガイド](measurement-guide.md)に従う。nginxからGoへrequest_idを伝播し、固定operation名で区間を対応付ける。生の利用者ID、SQL本文、秘密、署名付きURLは新規計測へ含めない。
 - 利用者・投稿期間単位で通知受信、投稿成功、直後の画像/詳細取得、期間終了前の友達feed検証の時刻・成功/失敗を追う。
 - 生の利用者IDは記録せず、走行内だけ有効な匿名相関キーを使う方法を検討する。秘密情報やIPも記録しない。
-- DB query/lock/pool wait、Go CPU、転送時間を分けて収集し、期限超過・途切れた段階と照合する。
+- DB query/lock/pool wait、Go CPU、転送時間を分けて収集し、期限超過・途切れた段階と照合する。request単位の計測とglobal DB pool統計差分を混同しない。
 - 計測記録にユーザーID、IP、query、署名付きURLを含めない。client benchmarkがなければserver logだけから得点成功を断言しない。
 
 ISUCON14 `R14-11` と `R14-15`（別リポジトリ `isucon_agent_skills` の `research/analysis/cases/isucon14.md`）は、改善した中間指標と全体制約を分けること、負荷段階で支援側の供給量が制約になり得ることを扱う。資料はこのcloneに含まれず、本文を再確認できない場合がある。いずれも著者報告・分析上の教訓で本環境の原因を示さないため、通知から検証までの各段階と供給側の処理件数を個別に計測する。

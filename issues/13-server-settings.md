@@ -15,6 +15,8 @@
 
 ## 観測した事実と未確認事項
 
+共通のrun形式と手軽な計測方法は[性能改善候補の計測ガイド](measurement-guide.md)を使う。nginx LTSVは正確な負荷窓で切り出し、`reqtime`と`apptime`、通常APIとSSEを分ける。現行のGo pool統計・PostgreSQLログを先に利用し、OS samplerやprofileの利用可否は実行環境ごとに確認する。
+
 2026-10-31の読み取り専用調査で確認した範囲を記録する。実機の設定変更・負荷試験は行っていない。
 
 - asia1、america1、europe1はGo/nginx、asia2は共有PostgreSQL 16.15。全アプリの`ISUREAL_DB_HOST`はasia2を指す。3回のping平均RTTはasia1 1.053ms、america1 100.846ms、europe1 100.847ms。ホストの`tc`にnetem設定はなかったが、ルーターやリージョン間の遅延・帯域制限は競技条件として変更・回避しない。
