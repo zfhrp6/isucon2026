@@ -25,6 +25,18 @@
 
 ## 改善方針
 
+### 継続判定行の応答加工
+
+DB取得範囲の削減とは別に、既存の各応答構築経路で51件目を変換前に除く。
+
+| 実装箇所 | 不要な加工 | 維持する条件 |
+|---|---|---|
+| `comment_api.go`の`getCommentsHandler` | 返さないコメント著者のプロフィールURL生成 | 最古順、認可、`hasMore` |
+| `realmoji_api.go`の`getRealMojisHandler` | 返さないRealMoji画像・利用者プロフィールのURL生成 | 最新順、有効状態、`hasMore` |
+| `memory_api.go`の`listMemories` | 返さない51投稿目の投稿画像・プロフィールURL生成 | 投稿順、`hasMore`、交流を読む投稿集合 |
+
+取得件数から`hasMore`を決めてから、返却する最大50件のみ変換する。SQLの51件取得は継続判定のため残す。各handlerは別々に境界件数0/50/51を確認し、行数削減や[応答内署名再利用](34-response-image-signature-reuse.md)の効果と混ぜず署名回数を比較する。
+
 Memoriesの投稿ごとに返却契約上必要な50件だけDBで取得する。RealMojiは `created_at, id` の降順で最新50件、コメントは同じ列の昇順で最古側50件を返しているため、ウィンドウ関数等でこの違いを保つ。対象IDの一括取得を維持し、N+1クエリ化は避ける。
 
 ## 制約・リスク

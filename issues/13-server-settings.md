@@ -45,12 +45,14 @@ PostgreSQLの100ms以上の`duration`付き`execute`/`statement`記録をSQLパ�
 - 現HEADの[`user_read_api.go`](../webapp/go/user_read_api.go#L29)はカーソル後の有効ユーザーをSQLで全件取得した後、Goで名前検索する。DB取得行数は未計測。詳細は[issue 04](04-user-search.md)。
 - [`memory_api.go`](../webapp/go/memory_api.go#L105)はMemories内で投稿ごとに50件だけ返す交流をSQLから全件取得してGoで切り詰める。最新保存nginxログのMemories成功応答はリージョン別平均0.480–0.650秒だが、SQL行数・時間の寄与は未計測。[issue 05](05-interaction-reads.md)を参照。
 - [`notification_api.go`](../webapp/go/notification_api.go#L37)はSSE接続ごとに500ms間隔でユーザーと通知のSELECTを行う。接続数に応じるSQL仕事量と通知遅延を計測する（[issue 07](07-notification-polling.md)）。
-- [`image_signature.go`](../webapp/go/image_signature.go#L24)は画像URL署名あたり1,000回のHMAC計算をする。CPU・割当量を示すprofileは未取得で、画像DB読み出しの時間とは区別する（[issue 17](17-image-signature-cpu.md)）。
+- [`image_signature.go`](../webapp/go/image_signature.go#L25)は画像URL署名あたり1,000段のHMAC計算をする。旧実装のCPU profileは[issue 30](30-asia1-cpu-profile.md)で確認済み。現HEADはstate/bufferを再利用するため、旧profileを現在のCPU比率とは扱わない。割当量・最新実装の負荷比較と画像DB時間は分ける（[issue 17](17-image-signature-cpu.md)）。
 - 現HEADの[`server.go`](../webapp/go/server.go#L47)にはDBプール上限設定があり、統計ログと合わせてpool待ちとDBロック待ちは別の指標として記録する。地域別open上限の効果はidle16走行から推定しない（[issue 25](25-db-connection-reuse.md)）。
 
 調査時点でCPU/memory limit、FD、OOM/swap、ディスク枯渇、キュー溢れに達した兆候はなかった。負荷中の飽和有無は未確認。`worker_connections=768`も枯渇未確認。WAL checkpoint警告は前日のデータ投入時のみで、今回負荷の証拠ではない。
 
 ## 優先する候補
+
+debugが既定であることと、不正レベル値でもdebug相当になることは別の問題。`config.go`・`action_log.go`の入力検証は独立した[issue 31](31-log-level-validation.md)で扱う。本issueのログ量・同期出力費用の比較と重複させない。
 
 DB接続のidle再利用は[issue 25](25-db-connection-reuse.md)、配備物と計測結果の対応付けは[issue 23](23-deployment-provenance.md)に調査目的を分ける。
 

@@ -74,6 +74,8 @@ Memories月・日handlerは35.57秒（getMemories 35.07s + getMemoriesByDate .50
 
 ## 実装候補と受け入れ条件
 
+以下はprofile取得時の旧実装から挙げた候補。現HEADでは`69d6365`のHMAC state/buffer再利用が統合済みである。保存profileの履歴は変更せず、実装の現状は[issue 17](17-image-signature-cpu.md)、要求内の重複署名削減は[issue 34](34-response-image-signature-reuse.md)へ分ける。統合済みであることは、このprofile取得時点の値が現在も同じであることや、実機で得点効果を確認したことを意味しない。
+
 1. `imageSignature`の1000 roundを保ち、HMAC objectの再初期化・buffer再利用を局所benchmarkで比較する。並行呼出しでbufferを共有しない。署名バイト列、有効期限、key管理、検証、削除/認可の反映は変更しない。API request数・同一画像URLの重複率をログ/benchmarkから別計測し、request単位に帰属しないCPU/allocsを無理に割り当てない。
 2. `createPostHandler`は寸法を確認するためにJPEGを完全decodeする。`DecodeConfig`による上限超過の早期拒否は候補だが、受理寸法での完全decodeは維持し、壊れ/途中切れデータの拒否を変えない。profileだけでは画像サイズや件数が不明で、decode全体の17.56%が節約できるとは言えない。HTTP bodyのサイズ上限適用は別契約・リスクも検討する。
 3. 施策ごとに同じ初期状態・実効binary/configのbaselineを取り、CPU/allocs profile、route別API p50/p95、件数と成功率、投稿後の期限内検証、scoreを比較する。DB/pool/lock待ちとOS CPU/iowaitも同一時間窓で照合し、CPU改善だけで待ちや採点の改善を主張しない。

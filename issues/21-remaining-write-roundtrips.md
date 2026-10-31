@@ -15,6 +15,17 @@
 
 ## 調査・制約
 
+### 実装箇所ごとの削減候補
+
+| 実装箇所 | 現在の余分な取得・更新 | 対処時の契約 |
+|---|---|---|
+| `user_api.go:loginHandler` → `session.go:createLoginSessionTx` | 呼び出し元で利用者行をロックした後、helperでも同じ利用者をSELECTしてロックする | 同じtransactionの二度目のロックは新しい競合待ちではないが往復は増える。helper単独の呼出経路も確認し、ロック済みの前提を明示する |
+| `friend_request_api.go:createFriendRequestHandler` | 相手1人との友達状態を確認するため友達一覧を全件取得。既存申請ID取得後の再取得もある | 対象の組に限定した照会とRETURNING等を評価し、逆方向申請・同時更新・競合応答を維持する |
+| `user_api.go:updateMeHandler` | 項目ごとにUPDATEし、最終状態をSELECTする | 指定項目をまとめても未指定項目・更新時刻・地域反映を維持する |
+| `post_api.go:updatePostHandler` | caption/visibilityの個別UPDATE、投稿期間・投稿の再取得 | 所有者・期間終了判定と最終応答、公開範囲の即時反映を維持する |
+
+これらは別handlerなので実装・比較を一つずつ行う。ログインの認証失敗前の排他取得は[issue 18](18-users-table-lock-investigation.md)、読み取り専用の現在投稿取得は[issue 36](36-current-post-read-roundtrips.md)で扱い、往復とロック競合を同一視しない。
+
 - API別のSQL回数・実行時間・待ち、結果行数を計測して優先対象を決める。
 - 変更時はstatus/error precedence、transaction境界、lock order、更新対象の意味を維持する。
 - 友達状態・プロフィール・セッション変更のread-after-writeと全リージョン即時反映を保つ。
