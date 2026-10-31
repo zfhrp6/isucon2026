@@ -25,7 +25,15 @@ type createCommentResponse struct {
 }
 
 func newCommentResponse(comment Comment, user User) createCommentResponse {
-	return createCommentResponse{ID: comment.ID, Author: newRelationshipUserResponse(user), Body: comment.Body, CreatedAt: comment.CreatedAt}
+	return newCommentResponseWithProfileImageURL(comment, user, newGetMeResponse(user).ProfileImageURL)
+}
+
+func newCommentResponseWithProfileImageSigner(comment Comment, user User, signer *profileImageURLSigner) createCommentResponse {
+	return newCommentResponseWithProfileImageURL(comment, user, signer.profileImageURL(user))
+}
+
+func newCommentResponseWithProfileImageURL(comment Comment, user User, profileImageURL *string) createCommentResponse {
+	return createCommentResponse{ID: comment.ID, Author: newRelationshipUserResponseWithProfileImageURL(user, profileImageURL), Body: comment.Body, CreatedAt: comment.CreatedAt}
 }
 
 func createCommentHandler(h *HandlerContext) echo.HandlerFunc {

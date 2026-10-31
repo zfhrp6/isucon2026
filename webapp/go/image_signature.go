@@ -36,10 +36,56 @@ func imageSignature(key []byte, imageID string, exp int64) []byte {
 }
 
 func signedImageURL(user User, imageID string) string {
-	exp := time.Now().Add(imageURLLifetime).Unix()
+	exp := imageURLExpiration()
+	return signedImageURLWithExpiration(user, imageID, exp)
+}
+
+func imageURLExpiration() int64 {
+	return time.Now().Add(imageURLLifetime).Unix()
+}
+
+func signedImageURLWithExpiration(user User, imageID string, exp int64) string {
 	query := url.Values{
 		"exp": {strconv.FormatInt(exp, 10)},
 		"sig": {base64.RawURLEncoding.EncodeToString(imageSignature(user.ImageKey, imageID, exp))},
 	}
 	return "/api/images/" + url.PathEscape(imageID) + "?" + query.Encode()
+}
+
+type profileImageURLKey struct {
+	signingKey string
+	imageID    string
+	exp        int64
+}
+
+// profileImageURLSigner reuses profile URLs only within one response build.
+type profileImageURLSigner struct {
+	urls map[profileImageURLKey]string
+}
+
+func newProfileImageURLSigner() *profileImageURLSigner {
+	return &profileImageURLSigner{urls: make(map[profileImageURLKey]string)}
+}
+
+func (signer *profileImageURLSigner) profileImageURL(user User) *string {
+	if user.ProfileImageID == nil {
+		return nil
+	}
+	return signer.profileImageURLAt(user, imageURLExpiration())
+}
+
+func (signer *profileImageURLSigner) profileImageURLAt(user User, exp int64) *string {
+	if user.ProfileImageID == nil {
+		return nil
+	}
+	// Expiry stays in the key because each call computes its own Unix-second
+	// boundary; storing the completed URL string also avoids sharing signature buffers.
+	key := profileImageURLKey{signingKey: string(user.ImageKey), imageID: *user.ProfileImageID, exp: exp}
+	if cached, ok := signer.urls[key]; ok {
+		return &cached
+	}
+
+	imageURL := signedImageURLWithExpiration(user, *user.ProfileImageID, exp)
+	signer.urls[key] = imageURL
+	return &imageURL
 }
