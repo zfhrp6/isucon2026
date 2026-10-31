@@ -8,13 +8,15 @@
 - 実装コミット/記録: 調査・改善コミットなし。
 - 検証済み/未検証: コード上のロック保持機構を確認。実DB待ち、HTTP並行時の競合、得点への寄与は未検証。
 - 期待効果: **大（仮説）**。実測効果: **未計測**。
-- 関連issue: [09 書き込み応答往復](09-write-roundtrips.md), [10 永続性・再起動](10-durability.md), [13 サーバ設定](13-server-settings.md)
+- 関連issue: [09 書き込み応答往復](09-write-roundtrips.md), [10 永続性・再起動](10-durability.md), [13 サーバ設定](13-server-settings.md), [18 usersテーブルロック](18-users-table-lock-investigation.md)
 
 ## 採点への寄与
 
 投稿受付から投稿後の友達フィード検証までが遅れたり、期間終了までに検証へ到達できなかったりする場合、通常期間10点・最終期間20点の活動に影響する可能性がある。ロック待ちが実際に発生する頻度・時間、検証到達率や得点への寄与は未確認であり、現時点では優先仮説にとどめる。
 
 ## 現状
+
+`users` テーブルに対する別のテーブルロック競合は[issue 18](18-users-table-lock-investigation.md)で扱う。本issueの対象は投稿期間行ロックに限定する。
 
 [`createPostHandler`](../webapp/go/post_api.go#L107) は投稿期間行を `FOR UPDATE` でロックし、その後に画像blobをINSERTし、投稿を `INSERT ... RETURNING` で作成してtransaction commitまでロックを保持する。この構造では同じ投稿期間への別投稿が当該行ロックで待つ可能性がある。一方、指定されたnginx access logにはDBの待機イベントやロック保持時間がなく、POSTの `reqtime` だけでロック競合を原因と断定できない。
 

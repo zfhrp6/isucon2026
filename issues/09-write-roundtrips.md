@@ -7,7 +7,7 @@
 - 実装コミット/記録: 2cbfead（merge 1fe7f30）。
 - 検証済み/未検証: 変更後SQLの限定PostgreSQL fixtureを確認。HTTP並行、別リージョンread-after-write、再起動耐久性、独立した同条件性能/得点比較は未実施。ユーザー報告では目立ったスコア向上なし、条件/デプロイ未確認。
 - 期待効果: **大（推定）**。実測効果: **スコア向上未観測（ユーザー報告、条件未確認）**。
-- 関連issue: [14 投稿期間ロック競合](14-posting-window-lock-investigation.md), [10 永続性・再起動](10-durability.md)
+- 関連issue: [14 投稿期間ロック競合](14-posting-window-lock-investigation.md), [10 永続性・再起動](10-durability.md), [21 残る書き込み往復](21-remaining-write-roundtrips.md)
 
 ## 採点への寄与
 
@@ -22,6 +22,8 @@
 投稿期間行 `FOR UPDATE` の保持区間と競合は本issueの対応範囲外で、実待ちや得点への寄与は未確認。[issue 14](14-posting-window-lock-investigation.md)で調査する。
 
 ## 改善方針
+
+本issueの完了範囲は成功応答用のDB往復削減まで。友達申請・プロフィール更新・ログインの別の読み書き経路は[issue 21](21-remaining-write-roundtrips.md)で個別に計測する。
 
 投稿・コメント・RealMoji応答の生成で、ロック/認可条件を保ちながら不要な逐次DB往復を統合する。対象外の投稿期間ロック競合は[issue 14](14-posting-window-lock-investigation.md)で扱う。
 

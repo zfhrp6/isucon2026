@@ -7,7 +7,7 @@
 - 実装コミット/記録: adf74ee（feat/02、現HEAD masterに未統合）。
 - 検証済み/未検証: 変更コミットと差分を確認。統合、HTTP並行/全認可ケース、同条件性能・得点比較は未確認。
 - 期待効果: **大（推定）**。実測効果: **未計測**。
-- 関連issue: [01 feed candidates](01-feed-candidates.md), [09 write roundtrips](09-write-roundtrips.md)
+- 関連issue: [01 feed candidates](01-feed-candidates.md), [09 write roundtrips](09-write-roundtrips.md), [16 認可読み取りのスコープ](16-scoped-authorization-reads.md)
 
 ## 採点への寄与
 

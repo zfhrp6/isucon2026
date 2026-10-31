@@ -7,7 +7,7 @@
 - 実装コミット/記録: 実装記録なし。
 - 検証済み/未検証: ログとコード構造を確認。SQL別時間・EXPLAIN・性能/得点比較は未検証。
 - 期待効果: **大（推定）**。実測効果: **未計測**。
-- 関連issue: [02 viewer context](02-viewer-context.md), [08 query indexes](08-query-indexes.md)
+- 関連issue: [02 viewer context](02-viewer-context.md), [08 query indexes](08-query-indexes.md), [15 空フィードの早期判定](15-empty-feed-short-circuit.md), [16 認可読み取りのスコープ](16-scoped-authorization-reads.md)
 
 ## 採点への寄与
 

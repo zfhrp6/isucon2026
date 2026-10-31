@@ -7,7 +7,7 @@
 - 実装コミット/記録: 実装記録なし。読み取り専用の実機調査記録あり。
 - 検証済み/未検証: 設定・資源の読取観測を記載。設定変更や負荷試験は未実施。
 - 期待効果: **中（推定）**。実測効果: **未計測**。
-- 関連issue: [03 session lookup](03-session-lookup.md), [06 image read](06-image-read.md), [07 notification polling](07-notification-polling.md), [08 query indexes](08-query-indexes.md)
+- 関連issue: [03 session lookup](03-session-lookup.md), [06 image read](06-image-read.md), [07 notification polling](07-notification-polling.md), [08 query indexes](08-query-indexes.md), [23 デプロイ来歴](23-deployment-provenance.md), [25 DB接続再利用](25-db-connection-reuse.md)
 
 ## 採点への寄与
 
@@ -29,6 +29,8 @@
 調査時点でCPU/memory limit、FD、OOM/swap、ディスク枯渇、キュー溢れに達した兆候はなかった。負荷中の飽和有無は未確認。`worker_connections=768`も枯渇未確認。WAL checkpoint警告は前日のデータ投入時のみで、今回負荷の証拠ではない。
 
 ## 優先する候補
+
+DB接続のidle再利用は[issue 25](25-db-connection-reuse.md)、配備物と計測結果の対応付けは[issue 23](23-deployment-provenance.md)に調査目的を分ける。
 
 順位は調査優先度であり、実測スコア差ではない。
 
