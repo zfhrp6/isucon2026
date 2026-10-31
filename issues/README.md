@@ -60,7 +60,7 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [23 デプロイ来歴](23-deployment-provenance.md) | 未着手 | 中（再現性仮説） | 未計測 |
 | [24 採点経路計測](24-scoring-path-measurement.md) | 調査中 | 大（調査価値） | 未計測 |
 | [25 DB接続再利用](25-db-connection-reuse.md) | 調査中 | 中（仮説） | 未計測 |
-| [27 PostgreSQL JIT比較](27-postgresql-jit-comparison.md) | 調査中（代表SQL比較済、bench効果未測） | 大（仮説） | 局所SQL改善確認、得点未計測 |
+| [27 PostgreSQL JIT比較](27-postgresql-jit-comparison.md) | 調査中（代表SQL比較・off設定準備済、bench効果未測） | 大（仮説） | 局所SQL改善確認、得点未計測 |
 
 未達の受け入れ条件が同じissueの範囲なら、そのissueに残す。別の原因・目的・仮説は新しいissueに分けて相互リンクする。状態と期待効果・実測効果を混同しない。対応済みの範囲へ別課題を継ぎ足さない。issue 10の初期化・永続性・再起動条件は優先順位の候補ではなく、全変更に適用する。
 

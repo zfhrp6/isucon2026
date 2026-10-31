@@ -51,6 +51,8 @@ alp ltsv --file logs/nginx/<run>/isu-asia1/access.ltsv.log --sort sum --reverse 
 
 PostgreSQL 16/main向けの追加設定は [`conf.d/isucon.conf`](postgresql/isu-asia2/conf.d/isucon.conf) に置く。`listen_addresses` は既存値を保持し、100ms以上のSQL、`deadlock_timeout`以上（現行既定値では1秒以上）のロック待ち、接続/切断をstderrログへ記録する。接続記録には接続先などの情報が含まれる場合がある。バインドパラメーターのログ長は通常時・エラー時とも0にするが、SQL文字列に直接書かれたリテラルやエラーのcontextまで除去する保証はない。遅いSQLログやエラーには識別情報が含まれる可能性があるため、取得物は機密ログとして扱う。
 
+このファイルの `jit = off` は [issue 27](../../issues/27-postgresql-jit-comparison.md) のベンチ比較候補で、性能採用を決めた値ではない。手順に従って稼働中の実効値・設定元と配備元の4設定ファイルを照合してから、baseline は `jit = on`、比較条件だけ `jit = off` にして同一条件で走行する。dry-runは対象表示のみで内容照合をしない。比較後は `jit = on` に戻して再デプロイする。`ALTER DATABASE` / `ALTER ROLE` やアプリのセッション設定がファイル設定を上書きする場合は、JIT以外に手を入れずに候補を切り替えられないため、比較を始めず上書き元を先に調査する。
+
 `log_statement=all` は有効化せず、`deadlock_timeout`、`logging_collector`、ログ出力先は変更しない。現在のDebian/Ubuntu構成では `logging_collector=off`、`log_destination=stderr` で、PostgreSQL 16/mainのログは `/var/log/postgresql/postgresql-16-main.log` に出る想定。collector無効時は `pg_current_logfile()` がNULLになり得るため、取得先の決定にはDebianの `pg_lsclusters` と固定したクラスタ/パスの検証を使う。スクリプトは別のログ配置を自動探索せず、想定と異なる環境では失敗する。
 
 設定反映前に対象を確認し、反映後に現在ログを取得する。
