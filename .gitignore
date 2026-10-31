@@ -1,2 +1,22 @@
 official_resource/
 
+# macOS metadata copied alongside source files
+._*
+.DS_Store
+
+# Locally built artifacts
+/webapp/go/isureal
+/webapp/go/isureal.next
+/webapp/rust/target/
+
+# Python bytecode
+*.py[cod]
+
+# Local environment secrets; keep checked-in templates
+.env
+.env.*
+!.env.example
+!.env.sample
+/env.sh
+/webapp/env.sh
+
