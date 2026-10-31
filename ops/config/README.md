@@ -66,7 +66,19 @@ PostgreSQL 16/main向けの追加設定は [`conf.d/isucon.conf`](postgresql/isu
 
 ユーザー観測ではベンチ中に米州・欧州のCPU使用率は低めで、asia1アプリまたはasia2 PostgreSQLのCPU使用率が高く、asia2のPostgreSQL `SELECT`/`BIND` processも高CPUに見えたとのこと。時刻・定量値・走行条件は未確認。100ms閾値の遅いSQLログだけでは高頻度の短いSQLを見落とし、statementログだけでBIND/Execute各段階のCPUを分離できないため、それぞれ別に計測する。nginx/アプリの活動時刻、DBログ、同じ時間窓のCPU・DB統計を照合し、`pg_stat_statements` が既に使える場合は集計差分も確認する。単独のログやCPU観察だけで原因を決めない。
 
-取得物は `.gitignore` 対象で、ローカルもディレクトリ0700・ファイル0600で保存する。スクリプトは現在のログファイルだけを読み、過去のrotate済みログは取得しない。サーバーが追記・rotate中に読む可能性があるため、厳密な原子的スナップショットではない。`--dry-run` はSSH接続やファイル作成をしない。SSHはBatchModeと接続timeoutを指定し、リモートではログ削除・truncate・reload等を行わない。
+次の走行前にログを保存し、現在ファイルを空にする場合は、fetchを先に行ってからtruncateを実行する。truncate後もPostgreSQLは稼働しており、すぐに新しいログ行が追記される場合がある。ベンチ後にもう一度fetchして保存する。
+
+```sh
+./ops/fetch-postgresql-logs.sh
+./ops/truncate-postgresql-logs.sh --dry-run
+./ops/truncate-postgresql-logs.sh
+# benchmark run
+./ops/fetch-postgresql-logs.sh
+```
+
+truncate対象は `/var/log/postgresql/postgresql-16-main.log` のみ。truncateで消えたログ履歴は保存済みfetchからしか戻せない。DBデータ・設定・ログファイルのinode/mode・サービス状態は変更せず、ログをrotate/delete/reloadもしない。fetchとtruncateは独立操作で、自動連動しない。
+
+fetchで取得したファイルは `.gitignore` 対象で、ローカルもディレクトリ0700・ファイル0600で保存する。`fetch-postgresql-logs.sh` は現在のログファイルだけを読み、過去のrotate済みログは取得しない。サーバーが追記・rotate中に読む可能性があるため、厳密な原子的スナップショットではない。`--dry-run` はSSH接続やファイル作成をしない。SSHはBatchModeと接続timeoutを指定し、fetch時のリモート操作はread-onlyでログ削除・truncate・reload等を行わない。
 
 PostgreSQL のメイン設定は `conf.d` を読み込む。取得時の有効な設定元は `postgresql.conf` と `conf.d/isucon.conf` だけだった。`postgresql.auto.conf` に有効な設定はなかったため、生成される実行時ファイルとして管理対象外にしている。反映時には、想定外の設定元や `postgresql.auto.conf` に有効な項目があれば処理を拒否する。SSL はホスト側の snakeoil 証明書と秘密鍵を参照するため、どちらもコピーしていない。パスワードや秘密鍵などの秘密情報も含めていない。
 
