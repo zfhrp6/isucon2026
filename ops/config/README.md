@@ -47,6 +47,27 @@ alp ltsv --file logs/nginx/<run>/isu-asia1/access.ltsv.log --sort sum --reverse 
 
 クエリ文字列を集計に含めたい場合は `-q` を指定できる。キー名は alp の LTSV 既定値を使う。`error.log` は LTSV 形式ではなく、障害診断用として別に保存する。反映前に fetch を実行すると新形式のファイルがまだないため、スクリプトは取得に失敗する。形式は [alp のログ形式](https://github.com/tkuchiki/alp#log-format)と [nginx の access log 設定](https://nginx.org/en/docs/http/ngx_http_log_module.html)に合わせている。
 
+## PostgreSQL の遅いSQL・ロック待ちログを取得する
+
+PostgreSQL 16/main向けの追加設定は [`conf.d/isucon.conf`](postgresql/isu-asia2/conf.d/isucon.conf) に置く。`listen_addresses` は既存値を保持し、100ms以上のSQL、`deadlock_timeout`以上（現行既定値では1秒以上）のロック待ち、接続/切断をstderrログへ記録する。接続記録には接続先などの情報が含まれる場合がある。バインドパラメーターのログ長は通常時・エラー時とも0にするが、SQL文字列に直接書かれたリテラルやエラーのcontextまで除去する保証はない。遅いSQLログやエラーには識別情報が含まれる可能性があるため、取得物は機密ログとして扱う。
+
+`log_statement=all` は有効化せず、`deadlock_timeout`、`logging_collector`、ログ出力先は変更しない。現在のDebian/Ubuntu構成では `logging_collector=off`、`log_destination=stderr` で、PostgreSQL 16/mainのログは `/var/log/postgresql/postgresql-16-main.log` に出る想定。collector無効時は `pg_current_logfile()` がNULLになり得るため、取得先の決定にはDebianの `pg_lsclusters` と固定したクラスタ/パスの検証を使う。スクリプトは別のログ配置を自動探索せず、想定と異なる環境では失敗する。
+
+設定反映前に対象を確認し、反映後に現在ログを取得する。
+
+```sh
+./ops/deploy-config.sh postgresql --dry-run
+./ops/deploy-config.sh postgresql
+./ops/fetch-postgresql-logs.sh --dry-run
+./ops/fetch-postgresql-logs.sh
+```
+
+設定はreload可能な範囲だけを追加する。PostgreSQL 16での隔離検証では `log_connections` と `log_disconnections` のcontextは `superuser-backend` で、reloadは再起動を要しなかった。接続記録の対象は設定reload後に開始する接続であり、既存セッションへ遡及しない。取得スクリプトは `isu-asia2` の稼働中16/mainだけを対象にし、接続時にクラスタ、実効設定、ログファイルをread-onlyで確認する。実機ログは `logs/postgresql/<UTC日時>-<識別子>/isu-asia2/postgresql.log`、設定メタデータは同じ場所の `settings.tsv` に保存する。ログ取得前の設定値も記録するため、負荷走行前後で条件を照合できる。初期状態・走行後など必要な時点で個別に取得し、収集間隔は比較記録へ残す。
+
+ユーザー観測ではベンチ中に米州・欧州のCPU使用率は低めで、asia1アプリまたはasia2 PostgreSQLのCPU使用率が高く、asia2のPostgreSQL `SELECT`/`BIND` processも高CPUに見えたとのこと。時刻・定量値・走行条件は未確認。100ms閾値の遅いSQLログだけでは高頻度の短いSQLを見落とし、statementログだけでBIND/Execute各段階のCPUを分離できないため、それぞれ別に計測する。nginx/アプリの活動時刻、DBログ、同じ時間窓のCPU・DB統計を照合し、`pg_stat_statements` が既に使える場合は集計差分も確認する。単独のログやCPU観察だけで原因を決めない。
+
+取得物は `.gitignore` 対象で、ローカルもディレクトリ0700・ファイル0600で保存する。スクリプトは現在のログファイルだけを読み、過去のrotate済みログは取得しない。サーバーが追記・rotate中に読む可能性があるため、厳密な原子的スナップショットではない。`--dry-run` はSSH接続やファイル作成をしない。SSHはBatchModeと接続timeoutを指定し、リモートではログ削除・truncate・reload等を行わない。
+
 PostgreSQL のメイン設定は `conf.d` を読み込む。取得時の有効な設定元は `postgresql.conf` と `conf.d/isucon.conf` だけだった。`postgresql.auto.conf` に有効な設定はなかったため、生成される実行時ファイルとして管理対象外にしている。反映時には、想定外の設定元や `postgresql.auto.conf` に有効な項目があれば処理を拒否する。SSL はホスト側の snakeoil 証明書と秘密鍵を参照するため、どちらもコピーしていない。パスワードや秘密鍵などの秘密情報も含めていない。
 
 ## 設定を反映する
