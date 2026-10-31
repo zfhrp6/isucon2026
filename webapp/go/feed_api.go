@@ -61,17 +61,17 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		items := make([]feedItemResponse, 0)
+		hasMore := len(posts) > 50
+		if hasMore {
+			posts = posts[:50]
+		}
+		items := make([]feedItemResponse, 0, len(posts))
 		for _, result := range posts {
 			item := feedItemResponse{createPostResponse: newPostResponse(result.Post, result.Author)}
 			if ranked {
 				item.Score = &result.Score
 			}
 			items = append(items, item)
-		}
-		hasMore := len(items) > 50
-		if hasMore {
-			items = items[:50]
 		}
 		return c.JSON(http.StatusOK, getFeedResponse{Items: items, HasMore: hasMore})
 	}

@@ -72,8 +72,8 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [29 画像本体のローカルキャッシュ](29-image-body-local-cache.md) | 未着手 | 小（仮説・再利用性を先に確認） | [05:52:00,05:56:00) UTCにID再出現12–15%を観測。実hit率ではない |
 | [30 asia1 CPU profile](30-asia1-cpu-profile.md) | 調査済み（初回・HMAC再利用後のstack帰属） | — | 初回107.78秒、追加走行73.42秒。CPU/allocsの範囲と比較条件は別 |
 | [31 ログレベル入力検証](31-log-level-validation.md) | 未着手 | 小（設定誤り防止） | 不正値がdebug相当になる分岐を確認、性能未計測 |
-| [32 フィード51件目の加工](32-feed-response-page-limit.md) | 未着手 | 小 | 応答構築後に切り詰めるコードを確認、性能未計測 |
-| [33 関係一覧51件目の加工](33-relationship-response-page-limit.md) | 未着手 | 小 | 応答構築後に切り詰めるコードを確認、性能未計測 |
+| [32 フィード51件目の加工](32-feed-response-page-limit.md) | 対応中（ローカル実装済み、実機検証待ち） | 小 | 変換前に50件へ制限、ローカルテスト・ビルド成功、性能未計測 |
+| [33 関係一覧51件目の加工](33-relationship-response-page-limit.md) | 対応中（ローカル実装済み、実機検証待ち） | 小 | 変換前に50件へ制限、ローカルテスト・ビルド成功、性能未計測 |
 | [34 画像署名の重複排除・キャッシュ](34-response-image-signature-reuse.md) | 対応済み（要求内再利用master統合、実機適用・比較未確認） | 中（重複率依存） | `2f7a4bc`でMemories・exportのプロフィールURLを再利用。同一プロフィール30回の局所benchmarkでCPU・割り当て削減。API・得点は未計測。プロセス内cacheは未実装の追加候補 |
 | [35 固定SQL列リスト](35-fixed-user-sql-projection.md) | 未着手 | 小 | 固定文字列の再生成を確認、CPU/allocs寄与未計測 |
 | [36 現在投稿の逐次取得](36-current-post-read-roundtrips.md) | 未着手 | 小 | 認証以外に3回SELECTするコードを確認、効果未計測 |

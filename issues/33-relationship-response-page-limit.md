@@ -2,10 +2,10 @@
 
 ## 管理状況
 
-- 状態: **未着手**
+- 状態: **対応中（ローカル実装済み、実機検証待ち）**
 - 対応範囲・完了条件: `relationship_list_api.go`で継続判定専用の行をプロフィール応答へ変換しない。
-- 実装コミット/記録: なし。
-- 検証済み/未検証: 最大51行の変換後に50件へ切るコードを確認。性能・得点効果は未計測。
+- 実装コミット/記録: `work1`の本変更。取得件数から`hasMore`を確定し、先頭50件だけを署名鍵変換・プロフィール応答生成へ渡す。SQLの`LIMIT 51`は維持する。
+- 検証済み/未検証: `go test -v ./...`・`go build -o /tmp/isureal-issues-32-33 ./cmd/isureal`成功。PostgreSQL統合テストは`ISUREAL_TEST_DATABASE_DSN`未設定のためスキップ。全relationship種別の0・50・51件のHTTP比較、画像有無による署名回数・性能・得点効果、実機適用は未確認。
 - 期待効果: **小（限定的な不要加工の削減）**。実測効果: **未計測**。
 - 関連issue: [32 フィードの応答件数](32-feed-response-page-limit.md), [34 応答内の署名再利用](34-response-image-signature-reuse.md)
 
