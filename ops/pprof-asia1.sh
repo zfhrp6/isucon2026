@@ -4,13 +4,12 @@ set -euo pipefail
 readonly HOST=isu-asia1
 readonly REMOTE_APP=/home/isucon/webapp/go/isureal
 readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-readonly REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
-readonly MAIN_REPO_ROOT=$(git -C "$REPO_ROOT" worktree list --porcelain | sed -n '1{s/^worktree //;p;}')
 
 usage() {
 	cat <<'EOF'
 Usage:
-  ops/pprof-asia1.sh start
+  ops/pprof-asia1.sh --source-root <checkout> start [windows]
+  ops/pprof-asia1.sh start [windows]
   ops/pprof-asia1.sh stop
   ops/pprof-asia1.sh capture-current [windows]
   ops/pprof-asia1.sh enable <measurement-id> <expected-original-sha256>
@@ -22,8 +21,9 @@ enable installs a temporary Go binary built with diagnostic_pprof on isu-asia1.
 capture stores consecutive 30-second CPU profiles (1–20 windows) under logs/pprof.
 restore puts back the saved binary, but refuses if another deploy changed it.
 Use a new measurement ID for each deployment; saved backups are retained.
-start/stop manage one locally recorded session under the main worktree's logs/pprof;
-capture-current captures that session. The explicit-ID commands remain available for recovery.
+start enables pprof and begins background capture; stop ends capture and restores the binary.
+Both manage one session under the main worktree's logs/pprof. The explicit-ID commands remain available for recovery.
+--source-root selects the checkout to build; by default the script's checkout is used.
 EOF
 }
 
@@ -32,6 +32,26 @@ die() {
 	exit 2
 }
 
+source_root="$SCRIPT_DIR/.."
+if [[ ${1:-} == --source-root ]]; then
+	(($# >= 3)) || die '--source-root requires a checkout and a command'
+	source_root=$2
+	shift 2
+fi
+source_root=$(cd -- "$source_root" && pwd -P) || die 'source checkout is not accessible'
+readonly REPO_ROOT="$source_root"
+SCRIPT_REPO_ROOT=$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel) || die 'cannot inspect script repository'
+readonly SCRIPT_REPO_ROOT
+script_common_dir=$(git -C "$SCRIPT_REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) || die 'cannot inspect script repository metadata'
+source_common_dir=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir) || die 'source checkout is not in a Git repository'
+script_common_dir=$(cd -- "$script_common_dir" && pwd -P) || die 'script repository metadata is inaccessible'
+source_common_dir=$(cd -- "$source_common_dir" && pwd -P) || die 'source repository metadata is inaccessible'
+[[ "$source_common_dir" == "$script_common_dir" ]] || die '--source-root must be a checkout of the script repository'
+source_top=$(git -C "$REPO_ROOT" rev-parse --show-toplevel) || die 'cannot determine source checkout root'
+[[ "$source_top" == "$REPO_ROOT" ]] || die '--source-root must name a checkout root, not a subdirectory'
+main_repo_root=$(git -C "$SCRIPT_REPO_ROOT" worktree list --porcelain | sed -n '1{s/^worktree //;p;}') || die 'cannot inspect script repository worktrees'
+main_repo_root=$(cd -- "$main_repo_root" && pwd -P) || die 'main Git worktree is inaccessible'
+readonly MAIN_REPO_ROOT="$main_repo_root"
 [[ -n "$MAIN_REPO_ROOT" && -d "$MAIN_REPO_ROOT" ]] || die 'could not determine the main Git worktree; refusing a local fallback'
 local_state_dir="$MAIN_REPO_ROOT/logs/pprof"
 active_file="$local_state_dir/active-session"
@@ -57,7 +77,7 @@ write_active() {
 run_low_level() {
 	local subcommand=$1
 	shift
-	bash "$SCRIPT_DIR/$(basename -- "$0")" "$subcommand" "$@"
+	bash "$SCRIPT_DIR/$(basename -- "$0")" --source-root "$REPO_ROOT" "$subcommand" "$@"
 }
 
 action=${1:-}
@@ -66,22 +86,57 @@ shift || true
 
 case "$action" in
 	start)
-		(($# == 0)) || die 'start takes no arguments'
+		windows=${1:-20}
+		(($# <= 1)) || die 'start takes at most one windows argument'
+		[[ "$windows" =~ ^([1-9]|1[0-9]|20)$ ]] || die 'windows must be 1–20'
 		mkdir -p -- "$local_state_dir"
 		exec 9>"$active_lock"
 		flock -x 9
 		[[ ! -e "$active_file" && ! -L "$active_file" ]] || die 'an active local session already exists; stop or inspect it first'
 		measurement_id="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+		session_dir="$local_state_dir/session-$measurement_id"
+		mkdir -m 700 -- "$session_dir"
 		original_hash=$(ssh "$HOST" "sha256sum '$REMOTE_APP' | cut -d ' ' -f1")
 		[[ "$original_hash" =~ ^[0-9a-f]{64}$ ]] || die 'could not read a valid remote binary SHA-256'
+		source_head=$(git -C "$REPO_ROOT" rev-parse HEAD) || die 'could not record source checkout HEAD'
+		[[ "$source_head" =~ ^[0-9a-f]{40,64}$ ]] || die 'source checkout returned an invalid HEAD'
 		# Persist before enabling: if the SSH result is ambiguous, stop still knows which remote state to inspect.
 		write_active "$measurement_id" "$original_hash"
 		if run_low_level enable "$measurement_id" "$original_hash"; then
-			printf 'pprof session %s started\n' "$measurement_id"
+			:
 		else
 			printf 'start did not complete; session %s remains recorded for safe recovery\n' "$measurement_id" >&2
 			exit 1
 		fi
+		diagnostic_hash=$(ssh "$HOST" "cat '/home/isucon/.isureal-pprof-diagnostic.$measurement_id/diagnostic.sha256'") || die 'could not read installed diagnostic binary checksum'
+		[[ "$diagnostic_hash" =~ ^[0-9a-f]{64}$ ]] || die 'installed diagnostic binary checksum is invalid'
+		printf '%s\n' "$REPO_ROOT" > "$session_dir/source-root.txt"
+		printf '%s\n' "$source_head" > "$session_dir/source-head.txt"
+		printf '%s\n' "$original_hash" > "$session_dir/original.sha256"
+		printf '%s\n' "$diagnostic_hash" > "$session_dir/diagnostic.sha256"
+		touch -- "$session_dir/collector-requested"
+		nohup env PPROF_CONTROL_DIR="$session_dir" bash "$SCRIPT_DIR/$(basename -- "$0")" --source-root "$REPO_ROOT" capture "$measurement_id" "$windows" > "$session_dir/collector.log" 2>&1 < /dev/null 9>&- &
+		collector_pid=$!
+		printf '%s\n' "$collector_pid" > "$session_dir/collector.pid"
+		ready=false
+		for attempt in {1..60}; do
+			if [[ -s "$session_dir/collector-ready" ]]; then
+				ready=true
+				break
+			fi
+			if [[ -s "$session_dir/collector-done" ]]; then
+				break
+			fi
+			sleep 1
+		done
+		if [[ "$ready" != true ]]; then
+			printf 'collector did not become ready; recovery record retained; details: %s\n' "$session_dir/collector.log" >&2
+			exit 1
+		fi
+		profile_dir=$(<"$session_dir/collector-ready")
+		[[ -d "$profile_dir" && "$profile_dir" == "$local_state_dir"/* ]] || die 'collector reported an invalid profile directory; recovery record retained'
+		printf '%s\n' "$profile_dir" > "$session_dir/profiles.path"
+		printf 'pprof session %s started; profiles: %s\n' "$measurement_id" "$profile_dir"
 		exit 0
 		;;
 	stop)
@@ -90,9 +145,41 @@ case "$action" in
 		exec 9>"$active_lock"
 		flock -x 9
 		read_active
+		session_dir="$local_state_dir/session-$active_id"
+		collector_status=0
+		if [[ -e "$session_dir/collector-requested" ]]; then
+			touch -- "$session_dir/collector-stop"
+			collector_done=false
+			for attempt in {1..55}; do
+				if [[ -s "$session_dir/collector-done" ]]; then
+					collector_done=true
+					break
+				fi
+				sleep 1
+			done
+			if [[ "$collector_done" == true ]]; then
+				read -r collector_status < "$session_dir/collector-done"
+				[[ "$collector_status" =~ ^[0-9]+$ ]] || collector_status=1
+			else
+				collector_status=1
+				collector_timeout=true
+				printf 'collector did not finish within 55 seconds; restoring service and retaining partial data\n' >&2
+			fi
+		fi
 		if run_low_level restore "$active_id"; then
-			rm -f -- "$active_file"
-			printf 'pprof session %s stopped; run data and remote backup retained\n' "$active_id"
+			if [[ ${collector_timeout:-false} != true ]]; then
+				rm -f -- "$active_file"
+			fi
+			if [[ ${collector_timeout:-false} == true ]]; then
+				printf 'service restored, but collector may still be finishing; recovery pointer retained. Retry stop after it exits.\n' >&2
+				exit 1
+			fi
+			if [[ "$collector_status" == 0 ]]; then
+				printf 'pprof session %s stopped; run data and remote backup retained\n' "$active_id"
+			else
+				printf 'pprof session %s restored, but collection failed or timed out; details: %s\n' "$active_id" "$session_dir/collector.log" >&2
+				exit 1
+			fi
 		else
 			# Restore can be unnecessary only when enable never changed anything. Confirm disk,
 			# running process, and listener state before removing our recovery pointer.
@@ -132,6 +219,8 @@ REMOTE_CHECK
 		flock -s 9
 		read_active
 		measurement_id=$active_id
+		session_dir="$local_state_dir/session-$measurement_id"
+		[[ ! -e "$session_dir/collector-requested" ]] || die 'automatic collector owns this session; use stop to finish and restore it'
 		flock -u 9
 		run_low_level capture "$measurement_id" "$windows"
 		exit $?
@@ -286,6 +375,19 @@ REMOTE
 		windows=${1:-20}
 		(($# <= 1)) || die 'capture takes at most one argument'
 		[[ "$windows" =~ ^([1-9]|1[0-9]|20)$ ]] || die 'windows must be 1–20'
+		control_dir=${PPROF_CONTROL_DIR:-}
+		if [[ -n "$control_dir" ]]; then
+			[[ -d "$control_dir" && ! -L "$control_dir" ]] || die 'collector control directory is invalid'
+			capture_finish() {
+				capture_status=$?
+				trap - EXIT
+				control_tmp="$control_dir/.collector-done.$$"
+				printf '%s\n' "$capture_status" > "$control_tmp"
+				mv -f -- "$control_tmp" "$control_dir/collector-done"
+				exit "$capture_status"
+			}
+			trap capture_finish EXIT
+		fi
 		run_id=$(date -u +%Y%m%dT%H%M%SZ)
 		output_root="$MAIN_REPO_ROOT/logs/pprof"
 		mkdir -p -- "$output_root"
@@ -314,7 +416,13 @@ REMOTE
 		date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$output_dir/capture-start-utc.txt"
 		ssh "$HOST" 'curl --fail --silent --show-error --max-time 10 http://127.0.0.1:6060/debug/pprof/allocs' > "$output_dir/allocs-before.pprof.tmp"
 		mv -- "$output_dir/allocs-before.pprof.tmp" "$output_dir/allocs-before.pprof"
+		if [[ -n "$control_dir" ]]; then
+			control_tmp="$control_dir/.collector-ready.$$"
+			printf '%s\n' "$output_dir" > "$control_tmp"
+			mv -f -- "$control_tmp" "$control_dir/collector-ready"
+		fi
 		for ((window = 1; window <= windows; window++)); do
+			[[ -z "$control_dir" || ! -e "$control_dir/collector-stop" ]] || break
 			printf 'Capturing CPU profile %d/%d (30s)\n' "$window" "$windows"
 			profile_tmp="$output_dir/cpu-$window.pprof.tmp.$$"
 			if ! ssh "$HOST" 'curl --fail --silent --show-error --max-time 40 "http://127.0.0.1:6060/debug/pprof/profile?seconds=30"' > "$profile_tmp"; then
@@ -325,6 +433,10 @@ REMOTE
 			ssh "$HOST" 'curl --fail --silent --show-error --max-time 10 http://127.0.0.1:6060/debug/pprof/allocs' > "$output_dir/allocs-after.pprof.tmp"
 			mv -f -- "$output_dir/allocs-after.pprof.tmp" "$output_dir/allocs-after.pprof"
 		done
+		if [[ -n "$control_dir" ]]; then
+			ssh "$HOST" 'curl --fail --silent --show-error --max-time 10 http://127.0.0.1:6060/debug/pprof/allocs' > "$output_dir/allocs-final.pprof.tmp"
+			mv -- "$output_dir/allocs-final.pprof.tmp" "$output_dir/allocs-final.pprof"
+		fi
 		printf 'Profiles saved under %s\n' "$output_dir"
 		;;
 	restore)
