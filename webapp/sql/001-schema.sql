@@ -168,6 +168,7 @@ CREATE TABLE posts (
 );
 CREATE INDEX posts_author_id ON posts(author_id);
 CREATE INDEX posts_posting_window_id ON posts(posting_window_id);
+CREATE INDEX posts_active_image_id_author_id ON posts(image_id, author_id) WHERE deleted_at IS NULL;
 
 CREATE TABLE friend_requests (
   id varchar(36) PRIMARY KEY,
@@ -190,6 +191,7 @@ CREATE TABLE realmojis (
 );
 CREATE UNIQUE INDEX realmojis_one_active ON realmojis(post_id,reactor_id) WHERE replaced_at IS NULL AND deleted_at IS NULL;
 CREATE INDEX realmojis_post_id ON realmojis(post_id);
+CREATE INDEX realmojis_active_image_id_reactor_id ON realmojis(image_id, reactor_id) INCLUDE (post_id) WHERE replaced_at IS NULL AND deleted_at IS NULL;
 
 CREATE TABLE comments (
   id varchar(36) PRIMARY KEY,
