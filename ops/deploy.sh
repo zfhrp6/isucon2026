@@ -1,29 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly -a DEFAULT_HOSTS=(isu-asia1 isu-europe1 isu-america1)
-readonly -a ALLOWED_HOSTS=(isu-asia1 isu-europe1 isu-america1)
+readonly -a APP_HOSTS=(isu-asia1 isu-europe1 isu-america1)
 readonly REMOTE_APP_DIR=/home/isucon/webapp/go
 readonly REMOTE_GO=/home/isucon/local/go/bin/go
+readonly REMOTE_ENV_FILE=/home/isucon/env.sh
+readonly REMOTE_APP_ENV_FILE=/home/isucon/isureal-app-env.sh
+readonly LOCAL_HOST_ENV_DIR_NAME=ops/env
 
 usage() {
 	cat <<'EOF'
-Usage: ops/deploy.sh [--dry-run] [--help] [host ...]
+Usage: ops/deploy.sh [--dry-run] [--help]
 
-Deploy webapp/go source to the three application servers by default. Optional
-host arguments select one or more application servers from this allowlist:
-isu-asia1, isu-europe1, isu-america1.
+Deploy the Go application and shared application settings to all three
+application servers. Host selection is intentionally not supported.
 
-The script stages the current local source in /tmp on each server, builds it
-there, atomically replaces the application binary, then restarts isureal-go.
-It does not transfer local .env files or env.sh; the service keeps using its
-server-side /home/isucon/env.sh configuration. The final check confirms only
-that the systemd unit is active; it does not test HTTP behavior.
-It never uses rsync --delete. Removed source files can therefore remain in the
-server's application directory, but they are not included in the staged build.
-Deploy SQL or static assets separately when those change.
+The deploy stages the source, builds it on each server, installs the local
+host-specific base environment and shared application settings, atomically
+replaces the binary, and restarts isureal-go. Each base file must exist under
+ops/env/<host>/env.sh.
+The final check confirms only that the systemd unit is active; it does not
+test HTTP behavior. SQL and static assets are deployed separately.
 
---dry-run prints the validated deployment plan without invoking ssh or rsync.
+--dry-run prints the validated plan without invoking ssh or rsync.
 EOF
 }
 
@@ -33,48 +32,52 @@ die() {
 }
 
 dry_run=false
-hosts=()
-for arg in "$@"; do
-	case "$arg" in
+while (($# > 0)); do
+	case "$1" in
 		--help|-h)
 			usage
 			exit 0
 			;;
 		--dry-run)
 			dry_run=true
+			shift
 			;;
-		--*) die "unknown option: $arg" ;;
-		*) hosts+=("$arg") ;;
+		*) die "unsupported argument: $1" ;;
 	esac
 done
 
-if ((${#hosts[@]} == 0)); then
-	hosts=("${DEFAULT_HOSTS[@]}")
+readonly script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+readonly repo_root=$(cd -- "$script_dir/.." && pwd)
+readonly source_dir="$repo_root/webapp/go"
+readonly app_env_source="$repo_root/ops/config/app.env.sh"
+readonly host_env_dir="$repo_root/$LOCAL_HOST_ENV_DIR_NAME"
+[[ -d "$source_dir" ]] || die 'Go source directory not found'
+[[ -f "$source_dir/go.mod" ]] || die 'go.mod not found'
+[[ -f "$source_dir/cmd/isureal/main.go" ]] || die 'Go entry point not found'
+[[ -f "$app_env_source" && -r "$app_env_source" ]] || die 'shared application environment file not readable'
+if ! bash -n -- "$app_env_source" >/dev/null 2>&1; then
+	die 'invalid shell syntax in shared application environment file'
 fi
-
-# Validate every target before doing any remote work.
-for host in "${hosts[@]}"; do
-	allowed=false
-	for candidate in "${ALLOWED_HOSTS[@]}"; do
-		if [[ "$host" == "$candidate" ]]; then
-			allowed=true
-			break
-		fi
-	done
-	$allowed || die "unsupported host: $host"
+declare -A host_env_sources=()
+for host in "${APP_HOSTS[@]}"; do
+	host_env_source="$host_env_dir/$host/env.sh"
+	[[ -f "$host_env_source" && -r "$host_env_source" && ! -L "$host_env_source" ]] || die "host environment file missing or unreadable: $host"
+	if ! bash -n -- "$host_env_source" >/dev/null 2>&1; then
+		die "invalid shell syntax in host environment file: $host"
+	fi
+	host_env_mode=$(stat -c '%a' -- "$host_env_source") || die "cannot inspect permissions for host environment file: $host"
+	if (( (8#$host_env_mode & 077) != 0 )); then
+		die "host environment file must be private (mode 0600 or stricter): $host"
+	fi
+	host_env_sources[$host]=$host_env_source
 done
-
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-repo_root=$(cd -- "$script_dir/.." && pwd)
-source_dir="$repo_root/webapp/go"
-[[ -d "$source_dir" ]] || die "source directory not found: $source_dir"
-[[ -f "$source_dir/go.mod" ]] || die "go.mod not found in $source_dir"
-[[ -f "$source_dir/cmd/isureal/main.go" ]] || die "Go entry point not found"
 
 if $dry_run; then
 	printf 'Source: %s\n' "$source_dir"
-	for host in "${hosts[@]}"; do
-		printf 'Would stage, build, atomically install, and restart isureal-go on %s\n' "$host"
+	printf 'Shared settings: %s -> %s\n' "$app_env_source" "$REMOTE_APP_ENV_FILE"
+	for host in "${APP_HOSTS[@]}"; do
+		printf 'Host environment: %s -> %s\n' "${host_env_sources[$host]}" "$host:$REMOTE_ENV_FILE"
+		printf 'Would build, install application and settings, and restart isureal-go on %s\n' "$host"
 	done
 	exit 0
 fi
@@ -82,10 +85,10 @@ fi
 command -v rsync >/dev/null 2>&1 || die 'rsync is required'
 command -v ssh >/dev/null 2>&1 || die 'ssh is required'
 
-for host in "${hosts[@]}"; do
+for host in "${APP_HOSTS[@]}"; do
 	printf 'Deploying to %s...\n' "$host"
 	stage=$(ssh "$host" 'mktemp -d /tmp/isureal-deploy.XXXXXX')
-	[[ "$stage" =~ ^/tmp/isureal-deploy\.[A-Za-z0-9]+$ ]] || die "unexpected staging path from $host: $stage"
+	[[ "$stage" =~ ^/tmp/isureal-deploy\.[A-Za-z0-9]+$ ]] || die "unexpected staging path from $host"
 	if ! rsync -az \
 		--exclude='._*' \
 		--exclude='AGENTS.md' \
@@ -95,15 +98,138 @@ for host in "${hosts[@]}"; do
 		--exclude='/isureal' \
 		--exclude='/isureal.next' \
 		"$source_dir/" "$host:$stage/"; then
-		# The validated mktemp path is intentionally embedded in the remote cleanup command.
-		# shellcheck disable=SC2029
 		ssh "$host" "rm -rf -- '$stage'" || true
-		die "rsync failed for $host"
+		die "source transfer failed for $host"
 	fi
-	# The validated mktemp path is intentionally embedded in the remote command.
-	# shellcheck disable=SC2029
-	if ! ssh "$host" "set -eu; trap 'rm -rf -- $stage' EXIT; cd '$stage'; '$REMOTE_GO' build -o isureal cmd/isureal/main.go; install -m 0755 isureal '$REMOTE_APP_DIR/isureal.next'; mv -f '$REMOTE_APP_DIR/isureal.next' '$REMOTE_APP_DIR/isureal'; sudo -n systemctl restart isureal-go; systemctl is-active --quiet isureal-go"; then
-		die "build or service restart failed for $host"
+	if ! rsync -az --chmod=F600 "$app_env_source" "$host:$stage/app.env.sh"; then
+		ssh "$host" "rm -rf -- '$stage'" || true
+		die "shared settings transfer failed for $host"
 	fi
-	printf 'Binary installed; service restart and active-state check passed on %s (HTTP unverified)\n' "$host"
+	if ! rsync -az --chmod=F600 "${host_env_sources[$host]}" "$host:$stage/host.env.sh"; then
+		ssh "$host" "rm -rf -- '$stage'" || true
+		die "host environment transfer failed for $host"
+	fi
+	if ! ssh "$host" "bash -s -- '$stage' '$REMOTE_APP_DIR' '$REMOTE_GO' '$REMOTE_ENV_FILE' '$REMOTE_APP_ENV_FILE'" <<'REMOTE'
+set -Eeuo pipefail
+stage=$1
+app_dir=$2
+go_bin=$3
+env_file=$4
+app_env_file=$5
+source_line='. /home/isucon/isureal-app-env.sh'
+env_backup=''
+app_env_backup=''
+env_changed=false
+app_env_changed=false
+app_env_existed=false
+env_existed=false
+env_mode=''
+app_env_mode=''
+env_next=''
+app_env_next=''
+binary_next=''
+
+restore_file() {
+	backup=$1
+	destination=$2
+	mode=$3
+	temporary=$(mktemp "${destination}.restore.XXXXXX")
+	if install -m "$mode" -- "$backup" "$temporary" && mv -f -- "$temporary" "$destination"; then
+		return 0
+	fi
+	rm -f -- "$temporary"
+	return 1
+}
+
+cleanup() {
+	status=$?
+	trap - EXIT
+	if [[ $status -ne 0 ]]; then
+		if [[ "$env_changed" == true ]]; then
+			if [[ "$env_existed" == true ]]; then
+				if restore_file "$env_backup" "$env_file" "$env_mode"; then
+					printf 'Restored %s from %s\n' "$env_file" "$env_backup" >&2
+				else
+					printf 'ERROR: restore %s manually from %s\n' "$env_file" "$env_backup" >&2
+				fi
+			elif ! rm -f -- "$env_file"; then
+				printf 'ERROR: could not remove newly installed %s\n' "$env_file" >&2
+			fi
+		elif [[ -n "$env_backup" ]]; then
+			rm -f -- "$env_backup" || printf 'WARNING: temporary backup remains at %s\n' "$env_backup" >&2
+		fi
+		if [[ "$app_env_changed" == true ]]; then
+			if [[ "$app_env_existed" == true ]]; then
+				if restore_file "$app_env_backup" "$app_env_file" "$app_env_mode"; then
+					printf 'Restored %s from %s\n' "$app_env_file" "$app_env_backup" >&2
+				else
+					printf 'ERROR: restore %s manually from %s\n' "$app_env_file" "$app_env_backup" >&2
+				fi
+			elif ! rm -f -- "$app_env_file"; then
+				printf 'ERROR: could not remove newly installed %s\n' "$app_env_file" >&2
+			fi
+		elif [[ -n "$app_env_backup" ]]; then
+			rm -f -- "$app_env_backup" || printf 'WARNING: temporary backup remains at %s\n' "$app_env_backup" >&2
+		fi
+	fi
+	for temporary in "$env_next" "$app_env_next" "$binary_next" "${env_file}.next" "${app_env_file}.next"; do
+		if [[ -n "$temporary" ]]; then
+			rm -f -- "$temporary" || printf 'WARNING: temporary file remains at %s\n' "$temporary" >&2
+		fi
+	done
+	rm -rf -- "$stage" || printf 'WARNING: staging directory remains at %s\n' "$stage" >&2
+	exit "$status"
+}
+trap cleanup EXIT
+
+umask 077
+exec 9>/home/isucon/.isureal-deploy.lock
+flock -x 9
+if [[ -e "$env_file" ]]; then
+	[[ -f "$env_file" && ! -L "$env_file" ]] || { printf 'base environment path is not a regular file\n' >&2; exit 1; }
+	env_existed=true
+	env_mode=$(stat -c '%a' -- "$env_file")
+fi
+if [[ -e "$app_env_file" ]]; then
+	[[ -f "$app_env_file" && ! -L "$app_env_file" ]] || { printf 'shared application settings path is not a regular file\n' >&2; exit 1; }
+	app_env_existed=true
+	app_env_mode=$(stat -c '%a' -- "$app_env_file")
+fi
+
+cd "$stage"
+"$go_bin" build -o isureal cmd/isureal/main.go
+
+if [[ "$env_existed" == true ]]; then
+	env_backup=$(mktemp "${env_file}.rollback.XXXXXX")
+	install -m 0600 -- "$env_file" "$env_backup"
+fi
+if [[ "$app_env_existed" == true ]]; then
+	app_env_backup=$(mktemp "${app_env_file}.rollback.XXXXXX")
+	install -m 0600 -- "$app_env_file" "$app_env_backup"
+fi
+printf 'Rollback backups on this host: env=%s app-env=%s\n' "${env_backup:-none}" "${app_env_backup:-none}"
+
+env_next=$(mktemp "${env_file}.next.XXXXXX")
+install -m 0600 -- "$stage/host.env.sh" "$env_next"
+if ! grep -Eq '^[[:space:]]*(source|\.)[[:space:]]+/home/isucon/isureal-app-env\.sh([[:space:]]|$)' "$env_next"; then
+	printf '\n%s\n' "$source_line" >> "$env_next"
+fi
+
+app_env_next=$(mktemp "${app_env_file}.next.XXXXXX")
+install -m 0644 -- "$stage/app.env.sh" "$app_env_next"
+binary_next=$(mktemp "$app_dir/isureal.next.XXXXXX")
+install -m 0755 -- isureal "$binary_next"
+
+mv -f -- "$app_env_next" "$app_env_file"
+app_env_changed=true
+mv -f -- "$env_next" "$env_file"
+env_changed=true
+mv -f -- "$binary_next" "$app_dir/isureal"
+sudo -n systemctl restart isureal-go
+systemctl is-active --quiet isureal-go
+REMOTE
+	then
+		die "build, configuration install, or service restart failed for $host"
+	fi
+	printf 'Application and shared settings installed; service restart and active-state check passed on %s (HTTP unverified)\n' "$host"
 done
