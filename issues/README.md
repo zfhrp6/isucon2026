@@ -15,7 +15,7 @@
 1. **[14 投稿期間ロック競合](14-posting-window-lock-investigation.md)** — 現masterの投稿作成は共通の投稿期間行を `FOR UPDATE` し、投稿transactionのcommitまで保持するため、同じ地域の異なる利用者の投稿も競合しうる。[05:52:00,05:55:00) UTCの保存ログで100ms以上のduration記録250件、`log_lock_waits` による取得までの待機164件（待機時間合計344.622秒、最大3.926秒）を観測した。ログは累積・複数走行を含み、採点負荷・artifact・得点との因果は未確認。`feat/14` の `f1e07c1` にある `FOR SHARE` 案とDB並行統合テストはmaster未統合で、実機・得点効果も未確認。
 2. **[16 認可読み取りスコープ](16-scoped-authorization-reads.md)** — 現行feedは認可候補SQL内で関係を判断する一方、事前に取得するviewer関係情報を候補取得へ渡していない。未統合の`feat/16`ではfriendsがある場合feed前SELECTを5回から2回、friendsがない場合4回から2回に削減する。feed活動のDB処理削減が期待できるが、HTTP認可試験・性能・得点の確認は残る。
 3. **[02 閲覧者コンテキスト](02-viewer-context.md)** — 投稿詳細・コメント・RealMoji等で共有される逐次viewer読取をまとめる。未統合の `feat/02` (`47c7a25`) は友達ありで照会を5回から2回、友達なしで4回から2回にする案。複数の読取活動に波及しうる。#16とfeed経路の削減効果を重ねて数えず、残る経路で評価する。
-4. **[18 usersロック](18-users-table-lock-investigation.md)** — [05:52:00,05:55:00) UTCの `log_lock_waits` 記録で、users行ロック取得までの待機61件、テーブルロック21件を観測した。これは `deadlock_timeout=1s` を超えた待機の記録で、最大待機はそれぞれ3.880秒、6.024秒。投稿期間ロック待ちからusers行ロックへ波及する仮説もあるため、まず#14適用前後のblockingを分離する。
+4. **[18 usersロック](18-users-table-lock-investigation.md)** — [05:52:00,05:55:00) UTCの `log_lock_waits` 記録で、users行ロック取得までの待機61件、テーブルロック21件を観測した。これは `deadlock_timeout=1s` を超えた待機の記録で、最大待機はそれぞれ3.880秒、6.024秒。投稿期間ロック待ちからusers行ロックへ波及する仮説もあるため、まず#14適用前後のblockingを分離する。 登録側はusername一意制約による対策をこのブランチに実装済みだが、DB移行・配備・得点比較は未実施。期間開始側とusers行ロックの調査は継続する。
 5. **[07 通知ポーリング](07-notification-polling.md)** — SSE接続ごとに500msごとに利用者と通知の照会を行う。待機接続数に応じてDB仕事量が増え、通知の遅れが高配点の投稿後検証時間を削る可能性がある。実際の同時接続数、DB負荷、通知から投稿までの遅れは未計測なので、相関を確認してから対策する。
 6. **[03 セッション索引](03-session-lookup.md) / [26 PostgreSQL索引調査](26-postgresql-index-investigation.md)** — `token_hash`索引がなければ認証必須APIの頻出照会に有効な可能性がある。ただし実DBカタログ、セッション件数、実行時間の最新確認が必要。現DDLだけから索引追加の性能効果は断定しない。
 7. **[17 画像署名CPU](17-image-signature-cpu.md)** — 旧実装のCPU profileで高い署名stack寄与を確認し、`69d6365`のHMAC state/buffer再利用は現HEADに統合済み。1,000段の出力は維持する。残る比較は最新実装のCPU/allocs・API・得点で、応答内の重複署名は[34](34-response-image-signature-reuse.md)、捨てる行の加工は[32](32-feed-response-page-limit.md)・[33](33-relationship-response-page-limit.md)・[04](04-user-search.md)・[05](05-interaction-reads.md)へ分ける。旧profileを現在の節約率や画像DB時間と混同しない。
@@ -59,7 +59,7 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [15 空フィード早期判定](15-empty-feed-short-circuit.md) | 一部対応済み（未投稿時の早期空応答。追加条件は未計測） | 小（残余仮説） | 未計測 |
 | [16 認可読み取りスコープ](16-scoped-authorization-reads.md) | 対応中（`feat/16` 実装あり・master未統合、フィードHTTP受入・実測待ち） | 中（仮説） | 未計測 |
 | [17 画像署名CPU](17-image-signature-cpu.md) | 対応済み（state/buffer再利用、同条件比較未確認） | 中（仮説） | 追加走行で署名38.99/73.42秒、PASS・11953点（ユーザー報告、改善幅未確定） |
-| [18 usersテーブルロック](18-users-table-lock-investigation.md) | 調査中（待機を追加観測、blocking関係未確認） | 中（仮説） | [05:52:00,05:55:00) UTCに取得までの待機：行61件、テーブル21件 |
+| [18 usersテーブルロック](18-users-table-lock-investigation.md) | 登録側対策を実装（未配備、期間開始側・行ロックは調査継続） | 中（仮説） | [05:52:00,05:55:00) UTCに取得までの待機：行61件、テーブル21件。別時間窓でプロフィール更新機能3件の待ちを観測。実装後の得点効果未計測 |
 | [19 初期データ復元](19-initial-data-reset-restoration.md) | 未着手 | 大（失敗防止仮説） | 未計測 |
 | [20 IP ban初期化整合性](20-ip-ban-init-consistency.md) | 未着手 | 小（正しさ仮説） | 未計測 |
 | [21 残る書き込み往復](21-remaining-write-roundtrips.md) | 未着手 | 中（仮説） | 未計測 |
