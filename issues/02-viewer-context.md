@@ -4,8 +4,8 @@
 
 - 状態: **対応中（実装コミットあり、現HEAD未統合）**
 - 対応範囲・完了条件: viewerContextの逐次読み取りをまとめる。完了条件は実装統合後、認可・地域即時反映・負荷条件を検証すること。
-- 実装コミット/記録: adf74ee（feat/02、現HEAD masterに未統合）。
-- 検証済み/未検証: 変更コミットと差分を確認。統合、HTTP並行/全認可ケース、同条件性能・得点比較は未確認。
+- 実装コミット/記録: `feat/02` の `47c7a25`（master未統合）。ユーザー・投稿済み状態・関係読取をまとめる案。友達ありでviewerContext内の照会を5回から2回、友達なしで4回から2回にする。
+- 検証済み/未検証: 単体テストとPostgreSQL統合テストを追加。master統合、HTTP並行・全認可ケース、同条件性能・得点比較は未確認。
 - 期待効果: **大（推定）**。実測効果: **未計測**。
 - 関連issue: [01 feed candidates](01-feed-candidates.md), [09 write roundtrips](09-write-roundtrips.md), [16 認可読み取りのスコープ](16-scoped-authorization-reads.md)
 
@@ -19,7 +19,9 @@
 
 ## 現状
 
-[`loadViewerContext`](../webapp/go/post.go#L103) はユーザー、投稿済み状態、ブロック、友達、友達の友達を別々に逐次照会する。[`canViewPost`](../webapp/go/post.go#L180) は投稿取得後にこの文脈を読み、[`canComment`](../webapp/go/comment.go#L48) も同様の取得を行う。各ハンドラが必要な関係を個別に再照会する経路もある。
+現masterの [`loadViewerContext`](../webapp/go/post.go#L103) はユーザー、投稿済み状態、ブロック、友達、友達の友達を別々に逐次照会する。[`canViewPost`](../webapp/go/post.go#L180) は投稿取得後にこの文脈を読み、[`canComment`](../webapp/go/comment.go#L48) も同様の取得を行う。`feat/02` の `47c7a25` は友達ありの照会を5回から2回、友達なしを4回から2回にまとめる案だが、HTTPを通した認可・応答の確認は未完了。
+
+フィードの事前読取から不要な関係照会を除く案は[issue 16](16-scoped-authorization-reads.md)で扱う。issue 16の変更後は、フィード経路で省いた照会を本issueの効果にも重ねて数えず、投稿詳細・コメント・RealMoji等の残る経路を評価する。
 
 ## 改善方針
 
