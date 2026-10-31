@@ -136,7 +136,6 @@ func selectFeedPosts(ctx context.Context, db sqlx.QueryerContext, viewerID strin
 		}
 		return posts, nil
 	}
-
 	query := `WITH viewer_friends AS (
   SELECT CASE WHEN user_low_id = $1 THEN user_high_id ELSE user_low_id END AS id
   FROM friendships WHERE user_low_id = $1 OR user_high_id = $1
@@ -146,7 +145,8 @@ func selectFeedPosts(ctx context.Context, db sqlx.QueryerContext, viewerID strin
   WHERE f.user_low_id <> $1 AND f.user_high_id <> $1
   GROUP BY 1
 ), candidates AS (
-  SELECT p.id, p.author_id, p.posted_at
+  SELECT p.id, p.author_id, p.posted_at,
+    CASE WHEN u.region IN ('america', 'europe') THEN 0 ELSE 1 END AS region_priority
   FROM posts p
   JOIN posting_windows w ON w.id = p.posting_window_id
   JOIN users u ON u.id = p.author_id AND u.status = 'active'
@@ -156,6 +156,11 @@ func selectFeedPosts(ctx context.Context, db sqlx.QueryerContext, viewerID strin
     AND NOT EXISTS (SELECT 1 FROM viewer_friends vf WHERE vf.id = p.author_id)
     AND candidate_mutual.count > 0
     AND p.visibility IN ('public', 'friends_of_friends')
+), cursor_region AS (
+  -- Resolve the cursor from eligible candidates in this statement's snapshot; the public cursor has no region-rank field.
+  SELECT c.region_priority AS priority
+  FROM candidates c
+  WHERE c.id = $4
 ), author_connections AS (
   SELECT a.author_id, sum(coalesce(vm.count, 0))::bigint AS score
   FROM (SELECT DISTINCT author_id FROM candidates) a
@@ -176,24 +181,56 @@ func selectFeedPosts(ctx context.Context, db sqlx.QueryerContext, viewerID strin
   SELECT post_id, count(*)::bigint AS count FROM engagements GROUP BY post_id
 ), scored AS (
   SELECT c.id, c.author_id, c.posted_at,
-    10 * coalesce(ec.count, 0) + 3 * coalesce(vm.count, 0) + least(coalesce(ac.score, 0), 30) AS score
+    10 * coalesce(ec.count, 0) + 3 * coalesce(vm.count, 0) + least(coalesce(ac.score, 0), 30) AS score,
+    c.region_priority
   FROM candidates c
   LEFT JOIN engagement_counts ec ON ec.post_id = c.id
   LEFT JOIN viewer_mutuals vm ON vm.id = c.author_id
   LEFT JOIN author_connections ac ON ac.author_id = c.author_id
 ), page AS (
   SELECT * FROM scored
-  WHERE ($2::bigint IS NULL OR (score, posted_at, id COLLATE "C") < ($2, $3, $4::varchar COLLATE "C"))
-  ORDER BY score DESC, posted_at DESC, id COLLATE "C" DESC LIMIT 51
+  WHERE ($2::bigint IS NULL
+    OR region_priority > (SELECT priority FROM cursor_region)
+    OR (region_priority = (SELECT priority FROM cursor_region)
+      AND (score, posted_at, id COLLATE "C") < ($2, $3, $4::varchar COLLATE "C")))
+  ORDER BY region_priority ASC, score DESC, posted_at DESC, id COLLATE "C" DESC LIMIT 51
 )
 SELECT ` + postColumns + `, ` + userColumnsAs("u", "author") + `, page.score
 FROM page JOIN posts p ON p.id = page.id
 JOIN posting_windows w ON w.id = p.posting_window_id
 JOIN users u ON u.id = p.author_id AND u.status = 'active'
-ORDER BY page.score DESC, page.posted_at DESC, page.id COLLATE "C" DESC`
+ORDER BY page.region_priority ASC, page.score DESC, page.posted_at DESC, page.id COLLATE "C" DESC`
 	var posts []feedPostResult
 	if err := sqlx.SelectContext(ctx, db, &posts, query, viewerID, input.BeforeScore, input.BeforePostedAt, input.BeforeID); err != nil {
 		return nil, err
+	}
+	if len(posts) == 0 && input.BeforeID != "" {
+		var cursorExists bool
+		if err := sqlx.GetContext(ctx, db, &cursorExists, `
+  WITH viewer_friends AS (
+    SELECT CASE WHEN user_low_id = $1 THEN user_high_id ELSE user_low_id END AS id
+    FROM friendships WHERE user_low_id = $1 OR user_high_id = $1
+  )
+  SELECT EXISTS (
+    SELECT 1 FROM posts p
+    JOIN posting_windows w ON w.id = p.posting_window_id AND w.ended_at IS NULL
+    JOIN users u ON u.id = p.author_id AND u.status = 'active'
+    WHERE p.id = $2 AND p.deleted_at IS NULL AND p.author_id <> $1
+      AND p.visibility IN ('public', 'friends_of_friends')
+      AND NOT EXISTS (SELECT 1 FROM block_relations b WHERE (b.blocker_id=$1 AND b.blocked_id=p.author_id) OR (b.blocked_id=$1 AND b.blocker_id=p.author_id))
+      AND NOT EXISTS (SELECT 1 FROM viewer_friends vf WHERE vf.id = p.author_id)
+      AND EXISTS (
+        SELECT 1 FROM viewer_friends vf JOIN friendships f
+          ON f.user_low_id = vf.id OR f.user_high_id = vf.id
+        WHERE CASE WHEN f.user_low_id = vf.id THEN f.user_high_id ELSE f.user_low_id END = p.author_id
+      )
+  )
+ `, viewerID, input.BeforeID); err != nil {
+			return nil, err
+		}
+		if !cursorExists {
+			return nil, NewAPIError(http.StatusBadRequest, "invalid_pagination")
+		}
 	}
 	for i := range posts {
 		if err := posts[i].Author.setImageKey(); err != nil {
