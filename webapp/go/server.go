@@ -27,6 +27,12 @@ func NewServer(ctx context.Context, config *Config) (*echo.Echo, func() error) {
 	if config.MaxIdleConns < 0 || config.MaxIdleConns > 30 {
 		panic("database max idle connections must be between 0 and 30")
 	}
+	if config.MaxOpenConns < 1 || config.MaxOpenConns > 90 {
+		panic("database max open connections must be between 1 and 90")
+	}
+	if config.MaxIdleConns > config.MaxOpenConns {
+		panic("database max idle connections must not exceed max open connections")
+	}
 	e := echo.New()
 	e.IPExtractor = extractClientIP
 
@@ -38,12 +44,12 @@ func NewServer(ctx context.Context, config *Config) (*echo.Echo, func() error) {
 	if err != nil {
 		panic("failed to open database: " + err.Error())
 	}
-	db.SetMaxOpenConns(30)
+	db.SetMaxOpenConns(config.MaxOpenConns)
 	db.SetMaxIdleConns(config.MaxIdleConns)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	logger.Info("db_pool_config",
 		"region", config.Region,
-		"max_open_connections", 30,
+		"max_open_connections", config.MaxOpenConns,
 		"max_idle_connections", config.MaxIdleConns,
 	)
 	err = db.Ping()

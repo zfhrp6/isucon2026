@@ -16,12 +16,20 @@ type Config struct {
 	DBName       string
 	LogLevel     string
 	MaxIdleConns int
+	MaxOpenConns int
 }
 
 func ConfigFromEnv() *Config {
 	maxIdleConns := 2
 	if value, ok := os.LookupEnv("ISUREAL_DB_MAX_IDLE_CONNS"); ok {
 		maxIdleConns = parseMaxIdleConns(value)
+	}
+	maxOpenConns := 30
+	if value, ok := os.LookupEnv("ISUREAL_DB_MAX_OPEN_CONNS"); ok {
+		maxOpenConns = parseMaxOpenConns(value)
+	}
+	if maxIdleConns > maxOpenConns {
+		panic("ISUREAL_DB_MAX_IDLE_CONNS must not exceed ISUREAL_DB_MAX_OPEN_CONNS")
 	}
 	return &Config{
 		Region:       envOrDefault("ISUREAL_REGION", "asia"),
@@ -32,7 +40,16 @@ func ConfigFromEnv() *Config {
 		DBName:       envOrDefault("ISUREAL_DB_NAME", "isureal"),
 		LogLevel:     envOrDefault("ISUREAL_LOG_LEVEL", "debug"),
 		MaxIdleConns: maxIdleConns,
+		MaxOpenConns: maxOpenConns,
 	}
+}
+
+func parseMaxOpenConns(value string) int {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 || parsed > 90 {
+		panic("ISUREAL_DB_MAX_OPEN_CONNS must be an integer between 1 and 90")
+	}
+	return parsed
 }
 
 func parseMaxIdleConns(value string) int {

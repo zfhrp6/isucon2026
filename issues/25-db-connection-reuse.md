@@ -2,23 +2,23 @@
 
 ## 管理状況
 
-- 状態: **対応中（idle上限16を暫定適用、反復・資源影響の確認待ち）**
+- 状態: **対応中（idle16を暫定採用、地域別open上限配分は未ベンチマーク）**
 - 対応範囲・完了条件: Go database/sql poolのidle接続再利用を比較し、接続再作成・待ち・API・得点・DB資源への影響を評価する。16は単発比較で暫定採用した値で、最適値の確定ではない。
-- 実装コミット/記録: `4273d4f` でsystemd `EnvironmentFile` が読む形式で設定を配布し、再起動後のプロセス環境値を検証。`ISUREAL_DB_MAX_IDLE_CONNS` は0〜30、`MaxOpenConns(30)`は維持。共通設定は `ops/config/app.env`、現在値は16。
+- 実装コミット/記録: `4273d4f` でsystemd `EnvironmentFile` が読む形式で設定を配布し、再起動後のプロセス環境値を検証。idle16は暫定採用。今回、Goの`ISUREAL_DB_MAX_OPEN_CONNS`対応と共通設定のAsia40 / Europe25 / America25配分を実装するが、ベンチマーク・実機配備前の候補であり、既存の実測結果には含めない。
 - 検証済み/未検証: idle上限8・16の実機走行でスコア、PostgreSQL接続記録、プール統計、nginx集計を取得。16は8より一回の得点が高く、`MaxIdleClosed` と待ち統計も減少した。走行ごとの処理件数が異なり、初期検証等もログに含まれるため、設定単独の因果・再現性は未確認。DBメモリ影響、16の再走行、16超の候補は未計測。
 - 期待効果: **中（仮説）**。実測効果: **idle16で高得点を単発観測、施策単独の寄与と再現性は未確定**。
 - 関連issue: [13 サーバ設定](13-server-settings.md), [08 クエリ索引](08-query-indexes.md)
 
 ## 現状と仮説
 
-Goは`SetMaxOpenConns(30)`を設定する。設定がない場合のdatabase/sql idle上限は2。比較用の `ISUREAL_DB_MAX_IDLE_CONNS` は0〜30で、現在16を暫定適用している。3アプリの最大open合計は90、DB `max_connections` は100。open上限は変更しない。遠隔appからDBへのRTTは過去のping観測で約101msだったが、接続再作成頻度や負荷中の待ちを示すものではない。nginx upstream keepaliveとは別の接続経路。
+Goの`ISUREAL_DB_MAX_OPEN_CONNS`既定値は30で、今回これを環境設定可能にし、共通設定でAsia40 / Europe25 / America25（合計90）を指定する。idle値は16を維持する。DB `max_connections` は100で、全アプリの上限合計90を超えない制約をdeploy時に検証する。地域別配分は未ベンチマーク・未配備。遠隔appからDBへのRTTは過去のping観測で約101msだったが、接続再作成頻度や負荷中の待ちを示すものではない。nginx upstream keepaliveとは別の接続経路。
 
 ## 調査・制約
 
 - `db_pool_config`と`db_pool_stats` JSONログを採る。統計にはregion、時刻、観測間隔、open/in-use/idle接続数、`MaxIdleClosed`・`MaxIdleTimeClosed`・`MaxLifetimeClosed`・`WaitCount`・`WaitDuration`の累積値と区間差分を含む。ログはアプリのAPIログレベル設定から独立して標準出力へ出す。計測はAPIリクエスト経路外で行う。
 - 起動時の `db_pool_config` で3台すべてのidle設定を確認し、走行ごとに起動時刻と初期カウンターを分ける。別起動をまたぐ累積値・差分を混ぜない。DB再初期化だけではカウンターはリセットされない。
-- 現在は`MaxOpenConns(30)`を維持する。これはコード上の設定値で、全台を40へ上げるとアプリだけで120接続となり、DB `max_connections=100` を超える。Asiaでは8・16両走行とも観測最大`InUse=30`かつpool waitがあった一方、Europe/Americaの観測最大は17/14だった。この単発観測から将来のピークに余裕があるとはいえないが、必要なら総枠90を維持するAsia 40 / Europe 25 / America 25の地域別配分を比較候補にする。CPU・I/O・DBロック待ちと同時刻に照合し、全台一律の枠増加やコード変更は別途判断する。
-- 16を同じ条件で再走行し、スコア・処理件数・成功率、プール統計とDBメモリの再現性を確認する。16超（例24）は`MaxIdleClosed`が残ることから追加候補にはなるが、保持接続のメモリ費用は未計測。idle上限を増やしても、同時open上限30やDBロック待ちは直接解消しない。
+- 8・16両走行ともAsiaで観測最大`InUse=30`かつpool waitがあった一方、Europe/Americaの観測最大は17/14だった。これを受け、全台一律40ではなく総枠90を維持するAsia40 / Europe25 / America25の配分を比較候補として実装した。単発観測は将来のピーク余裕を保証しないため、スコア・処理件数・プール待ちに加え、CPU・I/O・DBロック待ちとの同時刻比較が必要。
+- 16を同じ条件で再走行し、スコア・処理件数・成功率、プール統計とDBメモリの再現性を確認する。16超（例24）は`MaxIdleClosed`が残ることから追加候補にはなるが、保持接続のメモリ費用は未計測。idle上限を増やしても、同時open上限やDBロック待ちは直接解消しない。
 - `WaitCount` / `WaitDuration` はdatabase/sql poolで接続待ちした統計であり、PostgreSQLロック待ちと同じではない。接続を長く占有するSQLロックが両方に影響する可能性はあるが、CPU・I/O・blocking session・トランザクション保持時間との時刻相関は未計測。
 
 ## 検証・受け入れ条件
@@ -39,4 +39,4 @@ idle8→16ではPostgreSQL接続記録が266→129件（各走行の管理接続
 
 PostgreSQLの`log_lock_waits`に続く`STATEMENT`記録では、`posting_windows`の`FOR UPDATE`が148→112件、users関連が60→56件（うち`LOCK TABLE`は10→19件）。16でも投稿期間ロック待ちは残る。pool waitはDBロック待ちを計る指標ではなく、ロック待ちが接続を占有してpool待ちを増やす可能性も未切り分け。issue [14](14-posting-window-lock-investigation.md) の投稿期間ロック調査を優先し、usersテーブルの待ちは[18](18-users-table-lock-investigation.md)と分けて扱う。
 
-統計のみでは接続確立時間やDBメモリを直接測れない。まず16を同条件で再走行して再現性とDBメモリを確認する。16の優位が再現しない場合は、8との比較へ戻る。2は必要に応じbaseline対照として再測定する。idle24/30は保持接続のメモリ余裕を確認してから別比較する。`MaxOpenConns`の地域別配分案も未試験であり、idle設定の調整だけでロック待ちや最大open接続到達を解決したとは扱わない。
+統計のみでは接続確立時間やDBメモリを直接測れない。まずidle16を同条件で再走行して再現性とDBメモリを確認する。16の優位が再現しない場合は8との比較へ戻る。2は必要に応じbaseline対照として再測定する。idle24/30は保持接続のメモリ余裕を確認してから別比較する。地域別open配分は未試験で、idle調整だけでロック待ちや最大open接続到達を解消したとは扱わない。open配分の評価では、16 / 30の既存走行と新しい40 / 25 / 25走行を混同せず、設定反映を起動ログで確認する。

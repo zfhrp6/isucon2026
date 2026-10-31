@@ -19,7 +19,7 @@ The deploy stages the source, builds it on each server, installs the local
 host-specific base environment and shared application settings, atomically
 replaces the binary, and restarts isureal-go. Each base file must exist under
 ops/env/<host>/env.sh.
-After restart it verifies both the systemd active state and the idle setting in
+After restart it verifies both the systemd active state and the pool settings in
 the running process environment. It does not test HTTP behavior. SQL and
 static assets are deployed separately.
 
@@ -56,19 +56,36 @@ readonly host_env_dir="$repo_root/$LOCAL_HOST_ENV_DIR_NAME"
 [[ -f "$source_dir/go.mod" ]] || die 'go.mod not found'
 [[ -f "$source_dir/cmd/isureal/main.go" ]] || die 'Go entry point not found'
 [[ -f "$app_env_source" && -r "$app_env_source" ]] || die 'shared application environment file not readable'
-app_env_value=''
+declare -A app_settings=()
 while IFS= read -r line || [[ -n "$line" ]]; do
 	case "$line" in
 		''|'#'*) continue ;;
-		ISUREAL_DB_MAX_IDLE_CONNS=*)
-			[[ -z "$app_env_value" ]] || die 'duplicate key in shared application environment file'
-			app_env_value=${line#*=}
-			[[ "$app_env_value" =~ ^(0|[1-9]|[12][0-9]|30)$ ]] || die 'invalid shared idle connection value; expected an integer from 0 to 30'
+		ISUREAL_DB_MAX_IDLE_CONNS=*|ISUREAL_DB_MAX_OPEN_CONNS_ASIA=*|ISUREAL_DB_MAX_OPEN_CONNS_EUROPE=*|ISUREAL_DB_MAX_OPEN_CONNS_AMERICA=*)
+			key=${line%%=*}
+			[[ -z "${app_settings[$key]+present}" ]] || die 'duplicate key in shared application environment file'
+			app_settings[$key]=${line#*=}
 			;;
 		*) die 'unsupported line in shared application environment file' ;;
 	esac
 done < "$app_env_source"
-[[ -n "$app_env_value" ]] || die 'shared application environment file is missing ISUREAL_DB_MAX_IDLE_CONNS'
+for key in ISUREAL_DB_MAX_IDLE_CONNS ISUREAL_DB_MAX_OPEN_CONNS_ASIA ISUREAL_DB_MAX_OPEN_CONNS_EUROPE ISUREAL_DB_MAX_OPEN_CONNS_AMERICA; do
+	[[ -n "${app_settings[$key]+present}" ]] || die "shared application environment file is missing $key"
+done
+idle_value=${app_settings[ISUREAL_DB_MAX_IDLE_CONNS]}
+[[ "$idle_value" =~ ^(0|[1-9]|[12][0-9]|30)$ ]] || die 'invalid shared idle connection value; expected an integer from 0 to 30'
+declare -A region_open_values=(
+	[asia]=${app_settings[ISUREAL_DB_MAX_OPEN_CONNS_ASIA]}
+	[europe]=${app_settings[ISUREAL_DB_MAX_OPEN_CONNS_EUROPE]}
+	[america]=${app_settings[ISUREAL_DB_MAX_OPEN_CONNS_AMERICA]}
+)
+open_total=0
+for region in asia europe america; do
+	open_value=${region_open_values[$region]}
+	[[ "$open_value" =~ ^([1-9]|[1-8][0-9]|90)$ ]] || die "invalid max open value for $region; expected an integer from 1 to 90"
+	((open_value >= idle_value)) || die "max open connections for $region must be at least max idle connections"
+	open_total=$((open_total + open_value))
+done
+((open_total <= 90)) || die 'regional max open connection total must not exceed 90'
 declare -A host_env_sources=()
 for host in "${APP_HOSTS[@]}"; do
 	host_env_source="$host_env_dir/$host/env.sh"
@@ -85,10 +102,15 @@ done
 
 if $dry_run; then
 	printf 'Source: %s\n' "$source_dir"
-	printf 'Shared setting: %s (idle connections %s, appended to each host env file)\n' "$app_env_source" "$app_env_value"
+	printf 'Shared settings: %s (idle=%s, total max open=%s)\n' "$app_env_source" "$idle_value" "$open_total"
 	for host in "${APP_HOSTS[@]}"; do
+		case "$host" in
+			isu-asia1) region=asia ;;
+			isu-europe1) region=europe ;;
+			isu-america1) region=america ;;
+		esac
 		printf 'Host environment: %s -> %s\n' "${host_env_sources[$host]}" "$host:$REMOTE_ENV_FILE"
-		printf 'Would build, install application and settings, and restart isureal-go on %s\n' "$host"
+		printf 'Would build and restart isureal-go on %s (region=%s idle=%s max_open=%s)\n' "$host" "$region" "$idle_value" "${region_open_values[$region]}"
 	done
 	exit 0
 fi
@@ -112,22 +134,25 @@ for host in "${APP_HOSTS[@]}"; do
 		ssh "$host" "rm -rf -- '$stage'" || true
 		die "source transfer failed for $host"
 	fi
-	if ! rsync -az --chmod=F600 "$app_env_source" "$host:$stage/app.env"; then
-		ssh "$host" "rm -rf -- '$stage'" || true
-		die "shared settings transfer failed for $host"
-	fi
 	if ! rsync -az --chmod=F600 "${host_env_sources[$host]}" "$host:$stage/host.env.sh"; then
 		ssh "$host" "rm -rf -- '$stage'" || true
 		die "host environment transfer failed for $host"
 	fi
-	if ! ssh "$host" "bash -s -- '$stage' '$REMOTE_APP_DIR' '$REMOTE_GO' '$REMOTE_ENV_FILE' '$REMOTE_APP_ENV_FILE' '$app_env_value'" <<'REMOTE'
+	case "$host" in
+		isu-asia1) region=asia ;;
+		isu-europe1) region=europe ;;
+		isu-america1) region=america ;;
+	esac
+	open_value=${region_open_values[$region]}
+	if ! ssh "$host" "bash -s -- '$stage' '$REMOTE_APP_DIR' '$REMOTE_GO' '$REMOTE_ENV_FILE' '$REMOTE_APP_ENV_FILE' '$idle_value' '$open_value'" <<'REMOTE'
 set -Eeuo pipefail
 stage=$1
 app_dir=$2
 go_bin=$3
 env_file=$4
 app_env_file=$5
-app_env_value=$6
+idle_value=$6
+open_value=$7
 env_backup=''
 app_env_backup=''
 env_changed=false
@@ -223,10 +248,12 @@ env_next=$(mktemp "${env_file}.next.XXXXXX")
 awk '
 /^[[:space:]]*(source|\.)[[:space:]]+\/home\/isucon\/isureal-app-env\.sh([[:space:]]|$)/ { next }
 /^[[:space:]]*(export[[:space:]]+)?ISUREAL_DB_MAX_IDLE_CONNS=/ { next }
+/^[[:space:]]*(export[[:space:]]+)?ISUREAL_DB_MAX_OPEN_CONNS=/ { next }
+/^[[:space:]]*(export[[:space:]]+)?ISUREAL_DB_MAX_OPEN_CONNS_(ASIA|EUROPE|AMERICA)=/ { next }
 { print }
 ' "$stage/host.env.sh" > "$env_next"
 printf '\n' >> "$env_next"
-cat -- "$stage/app.env" >> "$env_next"
+printf 'ISUREAL_DB_MAX_IDLE_CONNS=%s\nISUREAL_DB_MAX_OPEN_CONNS=%s\n' "$idle_value" "$open_value" >> "$env_next"
 printf '\n' >> "$env_next"
 
 binary_next=$(mktemp "$app_dir/isureal.next.XXXXXX")
@@ -245,6 +272,8 @@ main_pid=$(systemctl show --property=MainPID --value isureal-go)
 [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] || { printf 'service has no running main process after restart\n' >&2; exit 1; }
 actual_idle_value=''
 actual_idle_count=0
+actual_open_value=''
+actual_open_count=0
 while IFS= read -r -d '' environment_entry; do
 	case "$environment_entry" in
 		ISUREAL_DB_MAX_IDLE_CONNS=*)
@@ -256,15 +285,24 @@ while IFS= read -r -d '' environment_entry; do
 				actual_idle_value=non-numeric
 			fi
 			;;
+		ISUREAL_DB_MAX_OPEN_CONNS=*)
+			actual_open_count=$((actual_open_count + 1))
+			candidate_open_value=${environment_entry#*=}
+			if [[ "$candidate_open_value" =~ ^([1-9]|[1-8][0-9]|90)$ ]]; then
+				actual_open_value=$candidate_open_value
+			else
+				actual_open_value=non-numeric
+			fi
+			;;
 	esac
 done < "/proc/$main_pid/environ"
-if [[ "$actual_idle_count" -ne 1 || "$actual_idle_value" != "$app_env_value" ]]; then
-	printf 'running process idle setting mismatch: expected=%s actual=%s count=%s\n' "$app_env_value" "$actual_idle_value" "$actual_idle_count" >&2
+if [[ "$actual_idle_count" -ne 1 || "$actual_idle_value" != "$idle_value" || "$actual_open_count" -ne 1 || "$actual_open_value" != "$open_value" ]]; then
+	printf 'running process pool setting mismatch: expected_idle=%s actual_idle=%s idle_count=%s expected_open=%s actual_open=%s open_count=%s\n' "$idle_value" "$actual_idle_value" "$actual_idle_count" "$open_value" "$actual_open_value" "$actual_open_count" >&2
 	exit 1
 fi
 REMOTE
 	then
 		die "build, configuration install, or service restart failed for $host"
 	fi
-	printf 'Application and settings installed; service restart and idle setting %s verified on %s (HTTP unverified)\n' "$app_env_value" "$host"
+	printf 'Application installed; idle=%s max_open=%s verified on %s (HTTP unverified)\n' "$idle_value" "$open_value" "$host"
 done
