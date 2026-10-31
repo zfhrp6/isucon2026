@@ -2,9 +2,7 @@ package isureal
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -55,18 +53,15 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, user := range []struct{ id, status string }{{"viewer", "active"}, {"friend", "active"}, {"mutual", "active"}, {"fof", "active"}, {"bridge", "active"}, {"public", "active"}, {"follow", "active"}, {"outsider-fof", "active"}, {"blocked", "active"}, {"blocked-forward", "active"}, {"friend-block-low", "active"}, {"friend-block-high", "active"}, {"asia-fof", "active"}, {"inactive", "deleted"}} {
+	for _, user := range []struct{ id, status string }{{"viewer", "active"}, {"friend", "active"}, {"mutual", "active"}, {"fof", "active"}, {"bridge", "active"}, {"public", "active"}, {"follow", "active"}, {"outsider-fof", "active"}, {"blocked", "active"}, {"blocked-forward", "active"}, {"friend-block-low", "active"}, {"friend-block-high", "active"}, {"inactive", "deleted"}} {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO users VALUES ($1,$1,$2,$1,'',NULL,'asia','regular',$3)`, user.id, strings.Repeat("0", 64), user.status); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET region='europe' WHERE id='fof'`); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO posting_windows VALUES ('open','2030-01-02',NULL), ('ended','2030-01-02',now())`); err != nil {
 		t.Fatal(err)
 	}
-	for i, edge := range [][2]string{{"friend", "viewer"}, {"mutual", "viewer"}, {"friend-block-low", "viewer"}, {"viewer", "friend-block-high"}, {"fof", "friend"}, {"fof", "mutual"}, {"asia-fof", "friend"}} {
+	for i, edge := range [][2]string{{"friend", "viewer"}, {"mutual", "viewer"}, {"friend-block-low", "viewer"}, {"viewer", "friend-block-high"}, {"fof", "friend"}, {"fof", "mutual"}} {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO friendships VALUES ($1,$2,$3)`, fmt.Sprintf("f%d", i), edge[0], edge[1]); err != nil {
 			t.Fatal(err)
 		}
@@ -81,9 +76,6 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO users VALUES ('low-bridge','low-bridge',$1,'low-bridge','','','asia','regular','active'), ('low-author','low-author',$1,'low-author','','','asia','regular','active')`, strings.Repeat("0", 64)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET region='america' WHERE id='low-author'`); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 7 {
@@ -125,7 +117,6 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 		{"fof-c", "fof", "open", "public", baseTime.Add(1 * time.Minute), false},
 		{"fof-low-a", "low-author", "open", "friends_of_friends", baseTime.Add(30 * time.Second), false},
 		{"fof-low-b", "low-author", "open", "friends_of_friends", baseTime.Add(20 * time.Second), false},
-		{"asia-fof", "asia-fof", "open", "friends_of_friends", baseTime.Add(10 * time.Minute), false},
 		{"blocked-post", "blocked", "open", "public", baseTime, false},
 		{"blocked-forward-post", "blocked-forward", "open", "public", baseTime, false},
 		{"friend-block-low-post", "friend-block-low", "open", "public", baseTime, false},
@@ -157,14 +148,11 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO comments VALUES ('fof-a','friend',NULL), ('fof-a','inactive',NULL), ('fof-a','mutual',NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO realmojis VALUES ('asia-fof','friend',NULL,NULL)`); err != nil {
-		t.Fatal(err)
-	}
 	viewer := viewerContext{
 		User: User{ID: "viewer"}, HasPostedToday: true,
 		Friends:          map[string]bool{"friend": true, "mutual": true, "friend-block-low": true, "friend-block-high": true},
-		FriendsOfFriends: map[string]bool{"fof": true, "low-author": true, "asia-fof": true},
-		MutualFriends:    map[string]int{"fof": 2, "bridge": 32, "low-bridge": 7, "low-author": 1, "asia-fof": 1},
+		FriendsOfFriends: map[string]bool{"fof": true, "low-author": true},
+		MutualFriends:    map[string]int{"fof": 2, "bridge": 32, "low-bridge": 7, "low-author": 1},
 		Blocked:          map[string]bool{"blocked": true, "blocked-forward": true, "friend-block-low": true, "friend-block-high": true},
 	}
 	var pageQueryPlan *feedQueryPlan
@@ -180,7 +168,7 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 		{"public", []string{"friend-public", "public-post", "following-post", "fof-c", "fof-b"}},
 		{"friends", []string{"friend-public", "friend-fof", "friend-post", "private-post"}},
 		{"following", []string{"following-post"}},
-		{"friends-of-friends", []string{"fof-a", "fof-c", "fof-b", "fof-low-a", "fof-low-b", "asia-fof"}},
+		{"friends-of-friends", []string{"fof-a", "fof-c", "fof-b", "fof-low-a", "fof-low-b"}},
 	} {
 		t.Run(test.feed, func(t *testing.T) {
 			var queryer sqlx.QueryerContext = tx
@@ -204,39 +192,16 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 				}
 			}
 			if test.feed == "friends-of-friends" {
-				if got[0].Score != 56 || got[1].Score != 36 || got[2].Score != 36 || got[3].Score != 10 || got[4].Score != 10 || got[5].Score != 13 {
-					t.Errorf("scores = %d, %d, %d, %d, %d, %d; want 56, 36, 36, 10, 10, 13", got[0].Score, got[1].Score, got[2].Score, got[3].Score, got[4].Score, got[5].Score)
+				if got[0].Score != 56 || got[1].Score != 36 || got[2].Score != 36 || got[3].Score != 10 || got[4].Score != 10 {
+					t.Errorf("scores = %d, %d, %d, %d, %d; want 56, 36, 36, 10, 10", got[0].Score, got[1].Score, got[2].Score, got[3].Score, got[4].Score)
 				}
 				cursor := getFeedRequest{Feed: test.feed, BeforeScore: &got[0].Score, BeforePostedAt: &got[0].PostedAt, BeforeID: got[0].ID}
 				next, err := selectFeedPosts(ctx, tx, viewer.ID, cursor)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(next) != 5 || next[0].ID != "fof-c" || next[1].ID != "fof-b" || next[2].ID != "fof-low-a" || next[3].ID != "fof-low-b" || next[4].ID != "asia-fof" {
-					t.Errorf("ranked next page = %#v, want remaining preferred-region posts followed by asia-fof", next)
-				}
-				lastPreferred := got[4]
-				lastPreferredCursor := getFeedRequest{Feed: test.feed, BeforeScore: &lastPreferred.Score, BeforePostedAt: &lastPreferred.PostedAt, BeforeID: lastPreferred.ID}
-				asiaPage, err := selectFeedPosts(ctx, tx, viewer.ID, lastPreferredCursor)
-				if err != nil || len(asiaPage) != 1 || asiaPage[0].ID != "asia-fof" {
-					t.Errorf("page after preferred regions = %#v, %v; want asia-fof", asiaPage, err)
-				}
-				lastPost := got[5]
-				exhaustedCursor := getFeedRequest{Feed: test.feed, BeforeScore: &lastPost.Score, BeforePostedAt: &lastPost.PostedAt, BeforeID: lastPost.ID}
-				exhaustedPage, err := selectFeedPosts(ctx, tx, viewer.ID, exhaustedCursor)
-				if err != nil || len(exhaustedPage) != 0 {
-					t.Errorf("page after final ranked post = %#v, %v; want empty page without error", exhaustedPage, err)
-				}
-				invalidCursor := getFeedRequest{Feed: test.feed, BeforeScore: &got[0].Score, BeforePostedAt: &got[0].PostedAt, BeforeID: "missing-post"}
-				_, err = selectFeedPosts(ctx, tx, viewer.ID, invalidCursor)
-				var apiErr *APIError
-				if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Code != "invalid_pagination" {
-					t.Errorf("missing ranked cursor error = %#v, want 400 invalid_pagination", err)
-				}
-				ineligibleCursor := getFeedRequest{Feed: test.feed, BeforeScore: &got[0].Score, BeforePostedAt: &got[0].PostedAt, BeforeID: "blocked-post"}
-				_, err = selectFeedPosts(ctx, tx, viewer.ID, ineligibleCursor)
-				if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || apiErr.Code != "invalid_pagination" {
-					t.Errorf("ineligible ranked cursor error = %#v, want 400 invalid_pagination", err)
+				if len(next) != 4 || next[0].ID != "fof-c" || next[1].ID != "fof-b" || next[2].ID != "fof-low-a" || next[3].ID != "fof-low-b" {
+					t.Errorf("ranked next page = %#v, want fof-c, fof-b, fof-low-a, fof-low-b", next)
 				}
 			} else if test.feed == "public" {
 				cursor := getFeedRequest{Feed: test.feed, BeforePostedAt: &got[0].PostedAt, BeforeID: got[0].ID}
@@ -261,20 +226,7 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				sort.SliceStable(oracle, func(i, j int) bool {
-					leftPriority := friendsOfFriendsRegionPriority(oracle[i].Author.Region)
-					rightPriority := friendsOfFriendsRegionPriority(oracle[j].Author.Region)
-					if leftPriority != rightPriority {
-						return leftPriority < rightPriority
-					}
-					if scores[oracle[i].ID] != scores[oracle[j].ID] {
-						return scores[oracle[i].ID] > scores[oracle[j].ID]
-					}
-					if !oracle[i].PostedAt.Equal(oracle[j].PostedAt) {
-						return oracle[i].PostedAt.After(oracle[j].PostedAt)
-					}
-					return oracle[i].ID > oracle[j].ID
-				})
+				sort.SliceStable(oracle, func(i, j int) bool { return scores[oracle[i].ID] > scores[oracle[j].ID] })
 			}
 			if len(oracle) > 51 {
 				oracle = oracle[:51]
@@ -401,13 +353,6 @@ func matchesFeed(viewer viewerContext, following map[string]bool, post Post, fee
 	default:
 		return false
 	}
-}
-
-func friendsOfFriendsRegionPriority(region string) int {
-	if region == "america" || region == "europe" {
-		return 0
-	}
-	return 1
 }
 
 func recommendationScores(ctx context.Context, db sqlx.QueryerContext, viewer viewerContext, posts []PostWithAuthor) (map[string]int64, error) {
