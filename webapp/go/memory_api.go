@@ -83,6 +83,10 @@ func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, st
 	if err != nil {
 		return response, err
 	}
+	response.HasMore = len(posts) > 50
+	if response.HasMore {
+		posts = posts[:50]
+	}
 	items := make([]memoryPostResponse, 0, len(posts))
 	profileImageURLs := newProfileImageURLSigner()
 	for _, post := range posts {
@@ -91,10 +95,6 @@ func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, st
 			RealMojis:          make([]replaceRealMojiResponse, 0),
 			Comments:           make([]createCommentResponse, 0),
 		})
-	}
-	response.HasMore = len(items) > 50
-	if response.HasMore {
-		items = items[:50]
 	}
 	if err := loadMemoryInteractions(ctx, db, items, profileImageURLs); err != nil {
 		return response, err

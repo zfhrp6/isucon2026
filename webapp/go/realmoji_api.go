@@ -145,13 +145,14 @@ func getRealMojisHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		items := make([]replaceRealMojiResponse, 0, len(reactions))
-		for _, reaction := range reactions {
-			items = append(items, newRealMojiResponse(reaction.RealMoji, reaction.Reactor))
-		}
-		hasMore := len(items) > 50
+		hasMore := len(reactions) > 50
 		if hasMore {
-			items = items[:50]
+			reactions = reactions[:50]
+		}
+		items := make([]replaceRealMojiResponse, 0, len(reactions))
+		profileImageURLs := newProfileImageURLSigner()
+		for _, reaction := range reactions {
+			items = append(items, newRealMojiResponseWithProfileImageSigner(reaction.RealMoji, reaction.Reactor, profileImageURLs))
 		}
 		return c.JSON(http.StatusOK, getRealMojisResponse{Items: items, HasMore: hasMore})
 	}

@@ -23,6 +23,11 @@ func imageSigningKey(secretKeyHash string) ([]byte, error) {
 }
 
 func imageSignature(key []byte, imageID string, exp int64) []byte {
+	signature := computeImageSignature(key, imageID, exp)
+	return signature[:]
+}
+
+func computeImageSignature(key []byte, imageID string, exp int64) (signature [sha256.Size]byte) {
 	value := []byte(strconv.FormatInt(exp, 10) + ":" + imageID)
 	mac := hmac.New(sha256.New, key)
 	sum := make([]byte, 0, sha256.Size)
@@ -32,7 +37,8 @@ func imageSignature(key []byte, imageID string, exp int64) []byte {
 		sum = mac.Sum(sum[:0])
 		value = sum
 	}
-	return value
+	copy(signature[:], value)
+	return signature
 }
 
 func signedImageURL(user User, imageID string) string {
@@ -45,9 +51,10 @@ func imageURLExpiration() int64 {
 }
 
 func signedImageURLWithExpiration(user User, imageID string, exp int64) string {
+	signature := processImageSignatures.signature(user.ImageKey, imageID, exp)
 	query := url.Values{
 		"exp": {strconv.FormatInt(exp, 10)},
-		"sig": {base64.RawURLEncoding.EncodeToString(imageSignature(user.ImageKey, imageID, exp))},
+		"sig": {base64.RawURLEncoding.EncodeToString(signature[:])},
 	}
 	return "/api/images/" + url.PathEscape(imageID) + "?" + query.Encode()
 }

@@ -66,8 +66,9 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 			posts = posts[:50]
 		}
 		items := make([]feedItemResponse, 0, len(posts))
+		profileImageURLs := newProfileImageURLSigner()
 		for _, result := range posts {
-			item := feedItemResponse{createPostResponse: newPostResponse(result.Post, result.Author)}
+			item := feedItemResponse{createPostResponse: newPostResponseWithProfileImageSigner(result.Post, result.Author, profileImageURLs)}
 			if ranked {
 				item.Score = &result.Score
 			}
