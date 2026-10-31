@@ -24,10 +24,13 @@ func imageSigningKey(secretKeyHash string) ([]byte, error) {
 
 func imageSignature(key []byte, imageID string, exp int64) []byte {
 	value := []byte(strconv.FormatInt(exp, 10) + ":" + imageID)
+	mac := hmac.New(sha256.New, key)
+	sum := make([]byte, 0, sha256.Size)
 	for range imageSignatureIterations {
-		mac := hmac.New(sha256.New, key)
+		mac.Reset()
 		mac.Write(value)
-		value = mac.Sum(nil)
+		sum = mac.Sum(sum[:0])
+		value = sum
 	}
 	return value
 }
