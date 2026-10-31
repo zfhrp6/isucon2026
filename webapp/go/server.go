@@ -1,7 +1,10 @@
 package isureal
 
 import (
+	"context"
+	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
@@ -16,9 +19,19 @@ type HandlerContext struct {
 	IPBans *IPBanList
 }
 
-func NewServer(config *Config) *echo.Echo {
+// NewServer builds the API server and its DB pool monitor. Call the returned cleanup after serving ends to stop monitoring and close the DB.
+func NewServer(ctx context.Context, config *Config) (*echo.Echo, func() error) {
 	if !validRegion(config.Region) {
 		panic("invalid server region: " + config.Region)
+	}
+	if config.MaxIdleConns < 0 || config.MaxIdleConns > 30 {
+		panic("database max idle connections must be between 0 and 30")
+	}
+	if config.MaxOpenConns < 1 || config.MaxOpenConns > 90 {
+		panic("database max open connections must be between 1 and 90")
+	}
+	if config.MaxIdleConns > config.MaxOpenConns {
+		panic("database max idle connections must not exceed max open connections")
 	}
 	e := echo.New()
 	e.IPExtractor = extractClientIP
@@ -31,11 +44,20 @@ func NewServer(config *Config) *echo.Echo {
 	if err != nil {
 		panic("failed to open database: " + err.Error())
 	}
-	db.SetMaxOpenConns(30)
+	db.SetMaxOpenConns(config.MaxOpenConns)
+	db.SetMaxIdleConns(config.MaxIdleConns)
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger.Info("db_pool_config",
+		"region", config.Region,
+		"max_open_connections", config.MaxOpenConns,
+		"max_idle_connections", config.MaxIdleConns,
+	)
 	err = db.Ping()
 	if err != nil {
+		_ = db.Close()
 		panic("failed to ping database: " + err.Error())
 	}
+	stopPoolStats := startDBPoolStats(ctx, db, logger, config.Region)
 
 	handlerContext := &HandlerContext{
 		DB:     db,
@@ -87,5 +109,14 @@ func NewServer(config *Config) *echo.Echo {
 	e.DELETE("/api/admin/users/:userId/certification", deleteUserCertificationHandler(handlerContext), AdminSessionMiddleware(handlerContext, true))
 	e.POST("/api/admin/posting-window", openPostingWindowHandler(handlerContext), AdminSessionMiddleware(handlerContext, true))
 
-	return e
+	var closeOnce sync.Once
+	var closeErr error
+	closeDB := func() error {
+		closeOnce.Do(func() {
+			stopPoolStats()
+			closeErr = db.Close()
+		})
+		return closeErr
+	}
+	return e, closeDB
 }

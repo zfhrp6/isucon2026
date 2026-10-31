@@ -19,6 +19,7 @@ official_resource/
 !.env.sample
 /env.sh
 /webapp/env.sh
+/ops/env/
 
 # Retrieved operational logs
 /logs/nginx/
