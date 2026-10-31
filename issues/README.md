@@ -59,7 +59,7 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [22 JPEG寸法事前判定](22-jpeg-dimension-preflight.md) | 未着手 | 小（仮説） | 未計測 |
 | [23 デプロイ来歴](23-deployment-provenance.md) | 未着手 | 中（再現性仮説） | 未計測 |
 | [24 採点経路計測](24-scoring-path-measurement.md) | 調査中 | 大（調査価値） | 未計測 |
-| [25 DB接続再利用](25-db-connection-reuse.md) | 調査中 | 中（仮説） | 未計測 |
+| [25 DB接続再利用](25-db-connection-reuse.md) | 対応中（idle16暫定適用、反復・DB資源確認待ち） | 中（仮説） | idle8 10750→idle16 11450点（単発走行、処理量差があり因果未確定） |
 | [27 PostgreSQL JIT比較](27-postgresql-jit-comparison.md) | 調査中（スコア改善報告あり、比較条件・採否未確定） | 大（仮説） | 局所SQL改善を単発観測、約5000→約7500点（ユーザー報告、条件未確認） |
 
 未達の受け入れ条件が同じissueの範囲なら、そのissueに残す。別の原因・目的・仮説は新しいissueに分けて相互リンクする。状態と期待効果・実測効果を混同しない。対応済みの範囲へ別課題を継ぎ足さない。issue 10の初期化・永続性・再起動条件は優先順位の候補ではなく、全変更に適用する。
