@@ -17,6 +17,8 @@
 
 [`listMemories`](../webapp/go/memory_api.go#L73) は最大50投稿を取る。続く [`loadMemoryInteractions`](../webapp/go/memory_api.go#L105) はその投稿ID群に属する現行RealMojiとコメントを制限なしで取得し、Go側で投稿ごとに50件に切っている。一方、単一投稿一覧では [`getRealMojisHandler`](../webapp/go/realmoji_api.go#L127) と [`getCommentsHandler`](../webapp/go/comment_api.go#L96) が helper に `LIMIT 51` を含む条件を渡し、応答側で51件目を落として50件を返す。
 
+2026-10-31のnginx全ログ集計ではMemoriesの成功応答が、同じスナップショット内でアジア599件（平均0.480秒、p95 1.143秒）、米州76件（0.639秒、0.961秒）、欧州103件（0.650秒、0.975秒）だった。ログにはDB取得行数や当該SQLの時間がないため、全件取得の寄与・改善余地は未確定。保存ログ `logs/nginx/20261031T051553Z-Z9ANpD` は初期検証等を含む。
+
 ## 改善方針
 
 Memoriesの投稿ごとに返却契約上必要な50件だけDBで取得する。RealMojiは `created_at, id` の降順で最新50件、コメントは同じ列の昇順で最古側50件を返しているため、ウィンドウ関数等でこの違いを保つ。対象IDの一括取得を維持し、N+1クエリ化は避ける。

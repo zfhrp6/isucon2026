@@ -4,14 +4,14 @@
 
 - 状態: **対応中（idle16を暫定採用、地域別open上限配分は未ベンチマーク）**
 - 対応範囲・完了条件: Go database/sql poolのidle接続再利用を比較し、接続再作成・待ち・API・得点・DB資源への影響を評価する。16は単発比較で暫定採用した値で、最適値の確定ではない。
-- 実装コミット/記録: `4273d4f` でsystemd `EnvironmentFile` が読む形式で設定を配布し、再起動後のプロセス環境値を検証。idle16は暫定採用。今回、Goの`ISUREAL_DB_MAX_OPEN_CONNS`対応と共通設定のAsia40 / Europe25 / America25配分を実装するが、ベンチマーク・実機配備前の候補であり、既存の実測結果には含めない。
+- 実装コミット/記録: `4273d4f` でsystemd `EnvironmentFile` が読む形式で設定を配布し、再起動後のプロセス環境値を検証。`ffb7cf2` でidle16、`6982c33` でregion別open上限、`a0c215f` で統合済み。現HEADの共通設定はidle16、Asia40 / Europe25 / America25。
 - 検証済み/未検証: idle上限8・16の実機走行でスコア、PostgreSQL接続記録、プール統計、nginx集計を取得。16は8より一回の得点が高く、`MaxIdleClosed` と待ち統計も減少した。走行ごとの処理件数が異なり、初期検証等もログに含まれるため、設定単独の因果・再現性は未確認。DBメモリ影響、16の再走行、16超の候補は未計測。
 - 期待効果: **中（仮説）**。実測効果: **idle16で高得点を単発観測、施策単独の寄与と再現性は未確定**。
 - 関連issue: [13 サーバ設定](13-server-settings.md), [08 クエリ索引](08-query-indexes.md)
 
 ## 現状と仮説
 
-Goの`ISUREAL_DB_MAX_OPEN_CONNS`既定値は30で、今回これを環境設定可能にし、共通設定でAsia40 / Europe25 / America25（合計90）を指定する。idle値は16を維持する。DB `max_connections` は100で、全アプリの上限合計90を超えない制約をdeploy時に検証する。地域別配分は未ベンチマーク・未配備。遠隔appからDBへのRTTは過去のping観測で約101msだったが、接続再作成頻度や負荷中の待ちを示すものではない。nginx upstream keepaliveとは別の接続経路。
+Goの`ISUREAL_DB_MAX_OPEN_CONNS`既定値は30で、共通設定`ops/config/app.env`はAsia40 / Europe25 / America25（合計90）、idle16を指定する。現HEADはこれらの設定を環境設定として扱い、deploy時に総枠を検証する。地域別配分は統合済みだが未ベンチマーク。idle16の実測は配分変更前の走行なので、この配分の効果は含まない。遠隔appからDBへのRTTは過去のping観測で約101msだったが、接続再作成頻度や負荷中の待ちを示すものではない。nginx upstream keepaliveとは別の接続経路。
 
 ## 調査・制約
 
@@ -39,4 +39,4 @@ idle8→16ではPostgreSQL接続記録が266→129件（各走行の管理接続
 
 PostgreSQLの`log_lock_waits`に続く`STATEMENT`記録では、`posting_windows`の`FOR UPDATE`が148→112件、users関連が60→56件（うち`LOCK TABLE`は10→19件）。16でも投稿期間ロック待ちは残る。pool waitはDBロック待ちを計る指標ではなく、ロック待ちが接続を占有してpool待ちを増やす可能性も未切り分け。issue [14](14-posting-window-lock-investigation.md) の投稿期間ロック調査を優先し、usersテーブルの待ちは[18](18-users-table-lock-investigation.md)と分けて扱う。
 
-統計のみでは接続確立時間やDBメモリを直接測れない。まずidle16を同条件で再走行して再現性とDBメモリを確認する。16の優位が再現しない場合は8との比較へ戻る。2は必要に応じbaseline対照として再測定する。idle24/30は保持接続のメモリ余裕を確認してから別比較する。地域別open配分は未試験で、idle調整だけでロック待ちや最大open接続到達を解消したとは扱わない。open配分の評価では、16 / 30の既存走行と新しい40 / 25 / 25走行を混同せず、設定反映を起動ログで確認する。
+統計のみでは接続確立時間やDBメモリを直接測れない。まずidle16を同条件で再走行して再現性とDBメモリを確認する。16の優位が再現しない場合は8との比較へ戻る。2は必要に応じbaseline対照として再測定する。idle24/30は保持接続のメモリ余裕を確認してから別比較する。地域別open配分はHEADに統合済みだが未試験であり、idle調整だけでロック待ちや最大open接続到達を解消したとは扱わない。open配分の評価では、16 / 30の既存走行と新しい40 / 25 / 25走行を混同せず、設定反映を起動ログで確認する。最新idle16のPostgreSQLログには投稿期間・users関連の遅いSQLがなお記録されている（issue [14](14-posting-window-lock-investigation.md), [18](18-users-table-lock-investigation.md)）。connection pool待ちとDBロック待ちは別指標であり、遅いSQL記録だけから因果を決めない。

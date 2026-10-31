@@ -1,6 +1,6 @@
 # Go アプリのスコア改善候補
 
-ここでは、現行の Go 実装と、2026-10-31 に複数回収集した nginx access/error log の集計から見つけた改善候補を整理する。各ログは個別の観測スナップショットで、初期検証と実負荷の帰属、配備コードの対応は確認できていない。APIごとのSQL時間やロック待ちも含まないため、効果は仮説でありボトルネックの断定ではない。
+ここでは、現行の Go 実装、2026-10-31のnginx access/error logとPostgreSQLログの集計から見つけた改善候補を整理する。各ログは個別の観測スナップショットで、初期検証と採点負荷の帰属、配備コードとの対応は確認できていない。SQL duration・ロック待ちの記録は一部あるが、API単位の完全な計測ではない。効果は仮説であり、ログだけでボトルネックや得点への因果を断定しない。
 
 効果は、**大**＝複数の頻出経路または高配点活動の完了率を変える可能性がある、**中**＝対象経路では効くが影響範囲・加点機会が限られる、**小**＝低頻度または単一活動への寄与が中心、と定義する。点数の保証ではない。
 
@@ -10,16 +10,18 @@
 
 ユーザー報告では、09の応答用DB往復削減を含むコミット `2cbfead`（merge `1fe7f30`）後も目立ったスコア向上はなかった。ただし、比較条件と実際のデプロイ内容を独立確認できていない。この報告だけから、API改善がなかった、施策が無効だった、または投稿期間ロックが原因だったとは結論しない。
 
-調査はまず **24/23** で採点経路・配備物・比較条件を揃える。次に **15/02/16/25** の空フィード該当率、閲覧者SQL、認可読取範囲、DB接続待ちを優先計測する。01のフィード候補取得は記載範囲を対応済みとし、個別SQL時間などの追加確認は必要に応じて02/08で扱う。その結果を踏まえ **06** の画像DB経路を調べ、**17** のHMAC CPU負荷はCPU寄与を示す計測が得られた場合に扱う。**14/18** は実待ちの証拠がある場合、**12/22/07** は採点対象の失敗・遅延との関連が確認できた場合に深掘りする。これは調査順であって、実装順や得点寄与順ではない。旧ログの画像reqtime約33%を新しいログへ当てはめず、HMAC計算を29-byte応答の長時間原因ともみなさない。issue 19/20は[issue 10](10-durability.md)と合わせる初期化・正しさの確認として並行し、性能順位には含めない。01と09は対応済みの範囲を調査順位から外す。
+調査はまず **24/23** で採点経路・配備物・比較条件を揃える。次に **14/18** の最新DB遅延についてblocking関係と採点への影響を確認し、続いて **15/02/16/25** の空フィード該当率、閲覧者SQL、認可読取範囲、pool待ちを計測する。01のフィード候補取得は記載範囲を対応済みとし、個別SQL時間などの追加確認は必要に応じて02/08で扱う。その結果を踏まえ **06** の画像DB経路を調べ、**17** のHMAC CPU負荷はCPU寄与を示す計測が得られた場合に扱う。**12/22/07** は採点対象の失敗・遅延との関連が確認できた場合に深掘りする。これは調査順であって、実装順や得点寄与順ではない。14/18の順位は今回の遅いSQL・ロック待ち記録に基づく追加調査の優先度であり、改善効果や採点への因果を確認したことを意味しない。旧ログの画像reqtime約33%を新しいログへ当てはめず、HMAC計算を29-byte応答の長時間原因ともみなさない。issue 19/20は[issue 10](10-durability.md)と合わせる初期化・正しさの確認として並行し、性能順位には含めない。01と09は対応済みの範囲を調査順位から外す。
+
+最新の保存ログ（2026-10-31 05:13–05:16 UTC）では、PostgreSQLの100ms以上duration記録に投稿期間`FOR UPDATE`、users行ロック、`LOCK TABLE users`が複数含まれた。時間窓と集計上の制約、詳細は[issue 13](13-server-settings.md)、ロック別の観測は[issue 14](14-posting-window-lock-investigation.md)と[issue 18](18-users-table-lock-investigation.md)を参照する。durationを純粋なロック待ちや得点原因とは扱わず、statement/blocker・採点経路・artifactの対応を追加確認する。
 
 PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化した単発比較でexecution短縮を観測した。ユーザーからJIT対応後のスコアが約5000点から約7500点へ上がったとの報告もあるが、比較条件とJIT単独の寄与は未確認である。詳細は[JIT比較](27-postgresql-jit-comparison.md)に記録し、設定と初期状態を揃えたベンチ結果から採否を判断する。
 
 | 調査順 | 調査対象 | 判断と次の条件 |
 |---:|---|---|
 | 1 | [採点経路計測](24-scoring-path-measurement.md) と [デプロイ来歴](23-deployment-provenance.md) | 同条件の到達率・期限超過を測り、稼働artifact/設定/DB状態を特定する。比較基準が揃うまで個別の遅さを原因扱いしない。 |
-| 2 | [空フィード](15-empty-feed-short-circuit.md)、[閲覧者コンテキスト](02-viewer-context.md)、[認可読取スコープ](16-scoped-authorization-reads.md)、[DB接続再利用](25-db-connection-reuse.md) | 該当率、viewer/feed別SQL、認可読取範囲、DB接続待ちを優先計測する。29-byte応答だけで空feedを断定せず、待ち統計なしにpool値を決めない。 |
-| 3 | [画像DB読み出し](06-image-read.md)、条件付きで[署名CPU](17-image-signature-cpu.md) | 新ログに旧集計の画像reqtime約33%を当てはめない。画像活動とDB時間を測り、HMACはCPU寄与が示された場合だけ調べる。空feedの長時間原因とは結び付けない。 |
-| 4 | [投稿期間ロック](14-posting-window-lock-investigation.md)、[usersテーブルロック](18-users-table-lock-investigation.md) | 実待ち・blockingの証拠が得られた場合に調査を進める。別のテーブル/行ロックとして切り分ける。 |
+| 2 | [投稿期間ロック](14-posting-window-lock-investigation.md)、[usersテーブル/行ロック](18-users-table-lock-investigation.md) | 遅いSQLとロック待ち記録を観測。DB待ち・blocking関係を同じ採点時間窓に対応付ける。テーブル/行ロックは別に切り分ける。観測は改善効果や得点因果の実証ではない。 |
+| 3 | [空フィード](15-empty-feed-short-circuit.md)、[閲覧者コンテキスト](02-viewer-context.md)、[認可読取スコープ](16-scoped-authorization-reads.md)、[DB接続再利用](25-db-connection-reuse.md) | 該当率、viewer/feed別SQL、認可読取範囲、実効pool設定とDB接続待ちを計測する。29-byte応答だけで空feedを断定せず、idle16走行から地域別open配分の効果を推定しない。 |
+| 4 | [画像DB読み出し](06-image-read.md)、条件付きで[署名CPU](17-image-signature-cpu.md) | 現HEADに画像逆引き索引は統合済み。最新artifactの適用と画像活動・DB時間を測り、HMACはCPU寄与が示された場合だけ調べる。 |
 | 5 | [プロフィール画像502](12-profile-image-502.md)、[JPEG寸法事前判定](22-jpeg-dimension-preflight.md)、[SSE通知](07-notification-polling.md) | 採点対象の失敗・遅延との関連が確認できた場合に発生層やCPU/接続負荷を調べる。502単独やtimeout件数だけでは原因扱いしない。 |
 | 並行・正しさ | [初期データ復元](19-initial-data-reset-restoration.md)、[IP ban初期化整合性](20-ip-ban-init-consistency.md)、[永続性・再起動](10-durability.md) | 性能順位と分け、隔離fixtureと全変更共通の初期化/再起動条件で確認する。 |
 | 条件付き | [残る書き込み往復](21-remaining-write-roundtrips.md)、[クエリ索引](08-query-indexes.md)ほかAPI固有issue | 活動成功率・DB計測から着手価値が確認できた場合に調査する。 |
@@ -40,7 +42,7 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [03 セッション照会](03-session-lookup.md) | 未着手 | 大 | 未計測 |
 | [04 ユーザー検索](04-user-search.md) | 未着手 | 中 | 未計測 |
 | [05 交流一覧](05-interaction-reads.md) | 未着手 | 中 | 未計測 |
-| [06 画像読み出し](06-image-read.md) | 対応中（別ブランチ実装あり、現HEAD未統合） | 大 | b3d3cca段階は別ブランチ記録でスコア向上未観測、a234c94段階は未計測 |
+| [06 画像読み出し](06-image-read.md) | 対応中（実装は現HEAD統合済み、受け入れ確認待ち） | 大 | ユーザー報告5,321→7,617点、条件未確認・索引単独寄与未確定 |
 | [07 通知ポーリング](07-notification-polling.md) | 調査中 | 中 | 未計測 |
 | [08 クエリ索引](08-query-indexes.md) | 未着手 | 中 | 未計測 |
 | [09 書き込み応答往復](09-write-roundtrips.md) | 対応済み（応答用DB往復削減の範囲） | 大 | スコア向上未観測（ユーザー報告、条件未確認） |
@@ -48,18 +50,19 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [11 エクスポート](11-export-memory.md) | 未着手 | 小 | 未計測 |
 | [12 プロフィール画像502](12-profile-image-502.md) | 調査中 | 中 | 未計測 |
 | [13 サーバ設定](13-server-settings.md) | 調査中 | 中 | 未計測 |
-| [14 投稿期間ロック競合](14-posting-window-lock-investigation.md) | 未着手 | 大（仮説） | 未計測 |
+| [14 投稿期間ロック競合](14-posting-window-lock-investigation.md) | 調査中（遅いSQL/ロック待ち記録、因果未確認） | 大（仮説） | 100ms以上のduration 274件、平均1.056秒（全実行平均ではない） |
 | [15 空フィード早期判定](15-empty-feed-short-circuit.md) | 未着手 | 中（仮説） | 未計測 |
 | [16 認可読み取りスコープ](16-scoped-authorization-reads.md) | 未着手 | 中（仮説） | 未計測 |
 | [17 画像署名CPU](17-image-signature-cpu.md) | 未着手 | 中（仮説） | 未計測 |
-| [18 usersテーブルロック](18-users-table-lock-investigation.md) | 未着手 | 中（仮説） | 未計測 |
+| [18 usersテーブルロック](18-users-table-lock-investigation.md) | 調査中（遅いSQL記録、blocking関係未確認） | 中（仮説） | users行ロック254件、table lock 42件の100ms以上durationを観測 |
 | [19 初期データ復元](19-initial-data-reset-restoration.md) | 未着手 | 大（失敗防止仮説） | 未計測 |
 | [20 IP ban初期化整合性](20-ip-ban-init-consistency.md) | 未着手 | 小（正しさ仮説） | 未計測 |
 | [21 残る書き込み往復](21-remaining-write-roundtrips.md) | 未着手 | 中（仮説） | 未計測 |
 | [22 JPEG寸法事前判定](22-jpeg-dimension-preflight.md) | 未着手 | 小（仮説） | 未計測 |
 | [23 デプロイ来歴](23-deployment-provenance.md) | 未着手 | 中（再現性仮説） | 未計測 |
 | [24 採点経路計測](24-scoring-path-measurement.md) | 調査中 | 大（調査価値） | 未計測 |
-| [25 DB接続再利用](25-db-connection-reuse.md) | 対応中（idle16暫定適用、反復・DB資源確認待ち） | 中（仮説） | idle8 10750→idle16 11450点（単発走行、処理量差があり因果未確定） |
+| [25 DB接続再利用](25-db-connection-reuse.md) | 対応中（idle16暫定値、地域別open配分と反復・DB資源確認待ち） | 中（仮説） | idle8 10750→idle16 11450点（単発走行、処理量差があり因果未確定） |
+| [26 PostgreSQL索引調査](26-postgresql-index-investigation.md) | 調査中（画像索引HEAD統合、その他候補の実測待ち） | 大（仮説） | 代表following計画で既存索引を確認、全負荷寄与は未判定 |
 | [27 PostgreSQL JIT比較](27-postgresql-jit-comparison.md) | 調査中（スコア改善報告あり、比較条件・採否未確定） | 大（仮説） | 局所SQL改善を単発観測、約5000→約7500点（ユーザー報告、条件未確認） |
 
 未達の受け入れ条件が同じissueの範囲なら、そのissueに残す。別の原因・目的・仮説は新しいissueに分けて相互リンクする。状態と期待効果・実測効果を混同しない。対応済みの範囲へ別課題を継ぎ足さない。issue 10の初期化・永続性・再起動条件は優先順位の候補ではなく、全変更に適用する。
@@ -98,7 +101,7 @@ for row in rows:
 
 画像200応答をサイズ別に見ると、32KiB以下の平均はアジア0.786秒（202件）、米州1.455秒（36件）、欧州1.342秒（33件）。256KiB超はアジア0.193秒（84件）、米州0.686秒（7件）、欧州0.878秒（7件）。小さい画像の平均が長いが、リージョン・要求順・データ状態がそろった比較ではないため、サイズが原因とは結論しない。
 
-SSE `reqtime` 平均はアジア9.056秒、米州11.184秒、欧州9.145秒。指定時間窓内にSSE timeoutはなかった。error logには過去の記録が混在するため、時間窓外の記録は今回の実行に帰属させない。SSEの `reqtime` は接続待ちを含むため、通常APIの遅さとして扱わない。投稿POST成功の平均 `reqtime` はアジア0.727秒（40件）、米州3.918秒（9件）、欧州3.783秒（8件）。friends feedはアジア0.225秒（101件）、米州1.612秒（10件）、欧州1.528秒（10件）。標本数・実行タイミングが異なり、DBクエリの実測はないのでリージョン差の原因は未確定。
+この`020717Z-nA4kZQ`に属する歴史スナップショットのaccess log全体を母集団としたSSE `reqtime` 平均はアジア9.056秒、米州11.184秒、欧州9.145秒。指定時間窓内にSSE timeoutはなかった。error logには過去の記録が混在するため、時間窓外の記録はこのスナップショットに帰属させない。SSEの `reqtime` は接続待ちを含むため、通常APIの遅さとして扱わない。投稿POST成功の平均 `reqtime` はアジア0.727秒（40件）、米州3.918秒（9件）、欧州3.783秒（8件）。friends feedはアジア0.225秒（101件）、米州1.612秒（10件）、欧州1.528秒（10件）。標本数・実行タイミングが異なり、DBクエリの実測はないのでリージョン差の原因は未確定。この歴史値を05:13 UTCの最新窓と混同しない。
 
 プロフィール画像PUTの02:06時間窓は[issue 12](12-profile-image-502.md)に記載する。これは以下の03:08スナップショットとは別集計である。
 
@@ -118,7 +121,7 @@ SSE `reqtime` 平均はアジア9.056秒、米州11.184秒、欧州9.145秒。�
 
 ## サーバ設定の候補
 
-接続プール、DB索引/PostgreSQL、nginx upstream、ログ、SSE timeoutの観測事実と検証候補は[サーバ設定の調査](13-server-settings.md)にまとめた。既存のAPI別優先順位とは別の仮説であり、実測結果が出るまでランキングへ反映しない。
+接続プール、DB索引/PostgreSQL、nginx upstream、ログ、SSE timeoutの観測事実と検証候補は[サーバ設定の調査](13-server-settings.md)にまとめた。最新SQL・待機記録を受けて14/18の調査順を上げたが、対応策の実測効果や採点への因果は未確認であり、実装候補の採否は比較結果から判断する。
 
 ## 実測での選び方
 
@@ -126,4 +129,4 @@ SSE `reqtime` 平均はアジア9.056秒、米州11.184秒、欧州9.145秒。�
 
 ## PostgreSQL索引の追加調査
 
-現HEADのスキーマで索引定義が見当たらない列を、実DBカタログ・統計・代表クエリ計画で確認する調査を[issue 26](26-postgresql-index-investigation.md)に追加した。DDL上の候補は実機に索引がないことや性能律速の証明ではない。セッション照会は[issue 03](03-session-lookup.md)、画像逆引きは[issue 06](06-image-read.md)、ページング/一覧の複合索引は[issue 08](08-query-indexes.md)に実装検討を集約し、調査結果と採否を同条件の読書き・採点経路計測に基づいて残す。
+索引定義が見当たらない列の調査は[issue 26](26-postgresql-index-investigation.md)に集約する。画像逆引き索引は現HEADに統合済みだが、実機適用と得点寄与は別途確認する。DDL上の候補は実機に索引がないことや性能律速の証明ではない。セッション照会は[issue 03](03-session-lookup.md)、画像逆引きは[issue 06](06-image-read.md)、ページング/一覧の複合索引は[issue 08](08-query-indexes.md)に実装検討を集約し、調査結果と採否を同条件の読書き・採点経路計測に基づいて残す。

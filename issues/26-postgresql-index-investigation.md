@@ -2,10 +2,10 @@
 
 ## 管理状況
 
-- 状態: **調査中（スキーマ上の候補確認、実測未）**
+- 状態: **調査中（複数の索引候補と代表計画を確認、負荷時の寄与は未判定）**
 - 対応範囲・完了条件: 現HEADのスキーマと頻出クエリから索引候補を列挙し、実DBの索引・統計・代表実行計画・HTTP採点経路への影響を調べる。採用/保留/既存索引で十分/未判定を根拠付きで記録する。
-- 実装コミット/記録: 実装記録なし。DDL追加・適用は本調査の範囲外。
-- 検証済み/未検証: スキーマとクエリの候補を確認。実DBカタログ、負荷時統計、代表実行計画、索引変更前後の費用・効果は未検証。
+- 実装コミット/記録: 画像逆引き索引は `102b7a0` で現HEADに統合済み。認証・username等の候補は未実装。
+- 検証済み/未検証: 現HEADのDDLと保存済み代表実行計画を確認。負荷時の全実行計画・統計および各索引候補の同条件比較は未検証。
 - 期待効果: **大（仮説）**。実測効果: **未計測**。
 - 関連issue: [03 セッション照会](03-session-lookup.md), [06 画像読み出し](06-image-read.md), [08 クエリ索引](08-query-indexes.md), [13 サーバ設定](13-server-settings.md)
 
@@ -15,16 +15,16 @@
 
 ## 現HEADで確認した候補
 
-現HEADの[`001-schema.sql`](../webapp/sql/001-schema.sql)では、`users.username`、`login_sessions.token_hash`、`posts.image_id`、`realmojis.image_id`に対応する明示的な索引定義が見当たらない。各経路は次の通り。
+現HEADの[`001-schema.sql`](../webapp/sql/001-schema.sql)では、`users.username`、`login_sessions.token_hash`に対応する明示的な索引定義が見当たらない。画像逆引き用の`posts.image_id`、`realmojis.image_id`部分索引は定義済み。各経路は次の通り。
 
 - `users.username`: 新規登録時の既存名確認とログインの利用者検索（[`user_api.go`](../webapp/go/user_api.go#L97)、[`user_api.go`](../webapp/go/user_api.go#L136)）。この照会候補は通常の非一意索引として評価する。索引候補の調査を、username一意性の新規制約導入と混同しない。
 - `login_sessions.token_hash`: 認証ミドルウェアが `token_hash` とactive状態を条件に照会する（[`session.go`](../webapp/go/session.go#L51)）。通常索引とactive部分索引のどちらが有効かは計画・統計で比較する。
-- `posts.image_id`: 画像有効性判定が投稿画像を逆引きし、所有者と削除状態を確認する（[`image_api.go`](../webapp/go/image_api.go#L76)）。
-- `realmojis.image_id`: 画像有効性判定が有効なRealMoji画像を逆引きする（[`image_api.go`](../webapp/go/image_api.go#L80)）。`replaced_at IS NULL AND deleted_at IS NULL` を含む部分索引は候補だが、適用可能性と利得を確認する。
+- `posts.image_id`: 画像有効性判定が投稿画像を逆引きし、所有者と削除状態を確認する（[`image_api.go`](../webapp/go/image_api.go#L76)）。現HEADでは`posts_active_image_id_author_id`部分索引が定義済み。
+- `realmojis.image_id`: 画像有効性判定が有効なRealMoji画像を逆引きする（[`image_api.go`](../webapp/go/image_api.go#L80)）。現HEADでは有効行向け部分索引`realmojis_active_image_id_reactor_id`が定義済み。
 
 これは現HEADのDDLの記述であり、実DBに同等・複合・部分索引がないことを意味しない。実機カタログの過去読取は[issue 13](13-server-settings.md)に時点付きで記録されている。実DBの現在状態は別途採取し、過去スナップショットと混ぜない。
 
-画像IDからの逆引き索引候補は[issue 06](06-image-read.md)の範囲で検討する。別ブランチの `b3d3cca` と `a234c94` は現HEADに未統合で、DBへの適用状況とも別の事実である。画像候補の新しい実装issueを重複作成せず、issue 06と本issueで調査結果を連携する。ページング/一覧クエリの複合索引は[issue 08](08-query-indexes.md)に集約する。
+画像IDからの逆引き索引は[issue 06](06-image-read.md)の実装として `102b7a0` で現HEADに統合済み。保存済みfollowing feed計画では`posts_active_image_id_author_id`が選択されているが、単発の代表利用者・0件結果等に限定された計画であり、全負荷での寄与は未判定。保存計画は `logs/postgresql/20261031T040646Z-oUxB3N/readonly-plans-orqj4j6j/`（Git管理外）にある。実DBの現在カタログは今回再採取していないため、DDLと稼働DBの同一性は別途確認する。認証索引候補はissue 03、ページング/一覧クエリの複合索引はissue 08に集約する。
 
 ## 調査手順
 
