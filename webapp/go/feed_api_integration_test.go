@@ -179,7 +179,7 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 				rankedQueryPlan = &feedQueryPlan{QueryerContext: tx}
 				queryer = rankedQueryPlan
 			}
-			got, err := selectFeedPosts(ctx, queryer, viewer, getFeedRequest{Feed: test.feed})
+			got, err := selectFeedPosts(ctx, queryer, viewer.ID, getFeedRequest{Feed: test.feed})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +196,7 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 					t.Errorf("scores = %d, %d, %d, %d, %d; want 56, 36, 36, 10, 10", got[0].Score, got[1].Score, got[2].Score, got[3].Score, got[4].Score)
 				}
 				cursor := getFeedRequest{Feed: test.feed, BeforeScore: &got[0].Score, BeforePostedAt: &got[0].PostedAt, BeforeID: got[0].ID}
-				next, err := selectFeedPosts(ctx, tx, viewer, cursor)
+				next, err := selectFeedPosts(ctx, tx, viewer.ID, cursor)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -205,7 +205,7 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 				}
 			} else if test.feed == "public" {
 				cursor := getFeedRequest{Feed: test.feed, BeforePostedAt: &got[0].PostedAt, BeforeID: got[0].ID}
-				next, err := selectFeedPosts(ctx, tx, viewer, cursor)
+				next, err := selectFeedPosts(ctx, tx, viewer.ID, cursor)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -253,7 +253,7 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	friendPage, err := selectFeedPosts(ctx, tx, viewer, getFeedRequest{Feed: "friends"})
+	friendPage, err := selectFeedPosts(ctx, tx, viewer.ID, getFeedRequest{Feed: "friends"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 		}
 	}
 	friendCursor := getFeedRequest{Feed: "friends", BeforePostedAt: &friendPage[49].PostedAt, BeforeID: friendPage[49].ID}
-	nextFriends, err := selectFeedPosts(ctx, tx, viewer, friendCursor)
+	nextFriends, err := selectFeedPosts(ctx, tx, viewer.ID, friendCursor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestSelectFeedPostsPostgres(t *testing.T) {
 		}
 	}
 	pageQueryPlan = &feedQueryPlan{QueryerContext: tx}
-	page, err := selectFeedPosts(ctx, pageQueryPlan, viewer, getFeedRequest{Feed: "public"})
+	page, err := selectFeedPosts(ctx, pageQueryPlan, viewer.ID, getFeedRequest{Feed: "public"})
 	if err != nil {
 		t.Fatal(err)
 	}

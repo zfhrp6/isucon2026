@@ -106,15 +106,7 @@ func loadViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID str
 	if viewer.User, err = getUser(ctx, db, viewerID); err != nil {
 		return viewer, err
 	}
-	if err := sqlx.GetContext(ctx, db, &viewer.HasPostedToday, `
-  SELECT EXISTS(
-    SELECT 1 FROM posts p
-    JOIN posting_windows posted ON posted.id = p.posting_window_id
-    JOIN posting_windows current ON current.region = $2 AND current.ended_at IS NULL
-                                AND current.local_date = posted.local_date
-    WHERE p.author_id = $1 AND p.deleted_at IS NULL
-  )
- `, viewer.ID, viewer.Region); err != nil {
+	if viewer.HasPostedToday, err = hasPostedToday(ctx, db, viewer.ID, viewer.Region); err != nil {
 		return viewer, err
 	}
 	if viewer.Blocked, err = getBlockedUserIDs(ctx, db, viewer.ID); err != nil {
@@ -156,6 +148,29 @@ func loadViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID str
 		}
 	}
 	return viewer, nil
+}
+
+func loadFeedViewer(ctx context.Context, db sqlx.QueryerContext, viewerID string) (User, bool, error) {
+	viewer, err := getUser(ctx, db, viewerID)
+	if err != nil {
+		return User{}, false, err
+	}
+	hasPosted, err := hasPostedToday(ctx, db, viewer.ID, viewer.Region)
+	return viewer, hasPosted, err
+}
+
+func hasPostedToday(ctx context.Context, db sqlx.QueryerContext, viewerID, region string) (bool, error) {
+	var hasPosted bool
+	err := sqlx.GetContext(ctx, db, &hasPosted, `
+  SELECT EXISTS(
+    SELECT 1 FROM posts p
+    JOIN posting_windows posted ON posted.id = p.posting_window_id
+    JOIN posting_windows current ON current.region = $2 AND current.ended_at IS NULL
+                                AND current.local_date = posted.local_date
+    WHERE p.author_id = $1 AND p.deleted_at IS NULL
+  )
+	`, viewerID, region)
+	return hasPosted, err
 }
 
 func (viewer viewerContext) canView(post Post) bool {

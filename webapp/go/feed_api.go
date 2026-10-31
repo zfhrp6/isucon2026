@@ -47,17 +47,17 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 			return NewAPIError(http.StatusBadRequest, "invalid_pagination")
 		}
 		ctx := c.Request().Context()
-		viewer, err := loadViewerContext(ctx, h.DB, GetSession(c).UserID)
+		viewer, hasPostedToday, err := loadFeedViewer(ctx, h.DB, GetSession(c).UserID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
 		}
 		if err != nil {
 			return err
 		}
-		if !viewer.HasPostedToday {
+		if !hasPostedToday {
 			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
 		}
-		posts, err := selectFeedPosts(ctx, h.DB, viewer, input)
+		posts, err := selectFeedPosts(ctx, h.DB, viewer.ID, input)
 		if err != nil {
 			return err
 		}
@@ -85,7 +85,7 @@ type feedPostResult struct {
 // selectFeedPosts applies eligibility and pagination before loading the page's
 // full post and author records. Ranked feeds must score every eligible
 // candidate before limiting, so their first CTE contains only lightweight IDs.
-func selectFeedPosts(ctx context.Context, db sqlx.QueryerContext, viewer viewerContext, input getFeedRequest) ([]feedPostResult, error) {
+func selectFeedPosts(ctx context.Context, db sqlx.QueryerContext, viewerID string, input getFeedRequest) ([]feedPostResult, error) {
 	feedPredicate := ""
 	switch input.Feed {
 	case "public":
@@ -125,7 +125,7 @@ func selectFeedPosts(ctx context.Context, db sqlx.QueryerContext, viewer viewerC
   AND ($2::timestamptz IS NULL OR (p.posted_at, p.id COLLATE "C") < ($2, $3::varchar COLLATE "C"))
   ORDER BY p.posted_at DESC, p.id COLLATE "C" DESC LIMIT 51`
 		var posts []feedPostResult
-		if err := sqlx.SelectContext(ctx, db, &posts, query, viewer.ID, input.BeforePostedAt, input.BeforeID); err != nil {
+		if err := sqlx.SelectContext(ctx, db, &posts, query, viewerID, input.BeforePostedAt, input.BeforeID); err != nil {
 			return nil, err
 		}
 		for i := range posts {
@@ -191,7 +191,7 @@ JOIN posting_windows w ON w.id = p.posting_window_id
 JOIN users u ON u.id = p.author_id AND u.status = 'active'
 ORDER BY page.score DESC, page.posted_at DESC, page.id COLLATE "C" DESC`
 	var posts []feedPostResult
-	if err := sqlx.SelectContext(ctx, db, &posts, query, viewer.ID, input.BeforeScore, input.BeforePostedAt, input.BeforeID); err != nil {
+	if err := sqlx.SelectContext(ctx, db, &posts, query, viewerID, input.BeforeScore, input.BeforePostedAt, input.BeforeID); err != nil {
 		return nil, err
 	}
 	for i := range posts {
