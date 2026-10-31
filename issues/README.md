@@ -45,8 +45,8 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [01 フィード候補取得](01-feed-candidates.md) | 対応済み（SQL候補取得・friends冗長探索の削減） | 大 | PASS・5321点（単発報告、施策単独寄与未確定） |
 | [02 閲覧者コンテキスト](02-viewer-context.md) | 対応中（`feat/02` の`47c7a25`、未統合・HTTP受入確認待ち） | 大（仮説） | 未計測 |
 | [03 セッション照会](03-session-lookup.md) | 調査中（索引候補確認、実測未） | 大 | 未計測 |
-| [04 ユーザー検索](04-user-search.md) | 未着手 | 中 | 未計測 |
-| [05 交流一覧](05-interaction-reads.md) | 未着手 | 中 | 未計測 |
+| [04 ユーザー検索](04-user-search.md) | 一部実装（51件目の加工省略、ローカル未検証・未適用） | 中 | 未計測 |
+| [05 交流一覧](05-interaction-reads.md) | 一部実装（51件目の加工省略、ローカル未検証・未適用。DB行数削減は未着手） | 中 | 未計測 |
 | [06 画像読み出し](06-image-read.md) | 対応中（実装は現HEAD統合済み、受け入れ確認待ち） | 大 | ユーザー報告5,321→7,617点、条件未確認・索引単独寄与未確定 |
 | [07 通知ポーリング](07-notification-polling.md) | 調査中 | 中 | 未計測 |
 | [08 クエリ索引](08-query-indexes.md) | 未着手 | 中 | 未計測 |
@@ -74,7 +74,7 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [31 ログレベル入力検証](31-log-level-validation.md) | 未着手 | 小（設定誤り防止） | 不正値がdebug相当になる分岐を確認、性能未計測 |
 | [32 フィード51件目の加工](32-feed-response-page-limit.md) | 対応中（ローカル実装済み、実機検証待ち） | 小 | 変換前に50件へ制限、ローカルテスト・ビルド成功、性能未計測 |
 | [33 関係一覧51件目の加工](33-relationship-response-page-limit.md) | 対応中（ローカル実装済み、実機検証待ち） | 小 | 変換前に50件へ制限、ローカルテスト・ビルド成功、性能未計測 |
-| [34 画像署名の重複排除・キャッシュ](34-response-image-signature-reuse.md) | 対応済み（要求内再利用master統合、実機適用・比較未確認） | 中（重複率依存） | `2f7a4bc`でMemories・exportのプロフィールURLを再利用。同一プロフィール30回の局所benchmarkでCPU・割り当て削減。API・得点は未計測。プロセス内cacheは未実装の追加候補 |
+| [34 画像署名の重複排除・キャッシュ](34-response-image-signature-reuse.md) | 対応中（要求内再利用拡張・上限付きプロセス内cacheをローカル実装、未検証・未適用） | 中（重複率依存） | 既存Memories・exportの局所benchmarkあり。今回の拡張・cacheのAPI・得点効果は未計測 |
 | [35 固定SQL列リスト](35-fixed-user-sql-projection.md) | 未着手 | 小 | 固定文字列の再生成を確認、CPU/allocs寄与未計測 |
 | [36 現在投稿の逐次取得](36-current-post-read-roundtrips.md) | 未着手 | 小 | 認証以外に3回SELECTするコードを確認、効果未計測 |
 

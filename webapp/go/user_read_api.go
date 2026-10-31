@@ -50,12 +50,17 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		query := normalizeSearchText(input.Q)
 		items := make([]relationshipUserResponse, 0)
+		hasMore := false
 		for _, user := range users {
 			if !strings.Contains(normalizeSearchText(user.Username), query) && !strings.Contains(normalizeSearchText(user.DisplayName), query) {
 				continue
 			}
 			if blocked[user.ID] {
 				continue
+			}
+			if len(items) == 50 {
+				hasMore = true
+				break
 			}
 			if err := user.setImageKey(); err != nil {
 				return err
@@ -64,13 +69,6 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 				user.Bio = ""
 			}
 			items = append(items, newRelationshipUserResponse(user))
-			if len(items) == 51 {
-				break
-			}
-		}
-		hasMore := len(items) > 50
-		if hasMore {
-			items = items[:50]
 		}
 		return c.JSON(http.StatusOK, searchUsersResponse{Items: items, HasMore: hasMore})
 	}
