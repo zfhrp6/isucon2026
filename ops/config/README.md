@@ -1,6 +1,6 @@
 # サーバー設定
 
-このディレクトリには、2026-10-31 01:34 UTC に各インスタンスから読み取り専用で取得した設定を保存する。コピーした15ファイルすべてで、実機のファイルとリポジトリ内ファイルの SHA256 が一致した。アプリケーションサーバー3台の nginx と logrotate 設定は同一だった。
+このディレクトリには、2026-10-31 01:34 UTC に各インスタンスから読み取り専用で取得した設定を保存する。初回取得時は15ファイルすべてで、実機のファイルとリポジトリ内ファイルの SHA256 が一致した。アプリケーションサーバー3台の nginx と logrotate 設定は同一だった。その後、nginx の3設定には alp 用アクセスログ形式への変更を加えている。実機へはまだ反映していない。
 
 | リポジトリ内のファイル | 取得元・配置先 | 所有者・モード |
 |---|---|---|
@@ -15,6 +15,37 @@
 | `postgresql/isu-asia2/pg_ctl.conf` | DBサーバー `/etc/postgresql/16/main/pg_ctl.conf` | 確認用に追跡。反映対象外 |
 
 nginx の有効サイト `/etc/nginx/sites-enabled/isureal.conf` は、管理対象の `sites-available/isureal.conf` を参照する既存シンボリックリンク。スクリプトはリンク先を検証し、リンク自体は変更しない。nginx の `conf.d`、`modules-enabled` と PostgreSQL の `environment` にはコピーが必要な有効設定はなかった。nginx はパッケージ管理下の `/etc/nginx/mime.types` を参照する。
+
+## nginx アクセスログを alp で分析する
+
+Git 管理している nginx 設定では、3台ともアクセスログを LTSV にする。`access.ltsv.log` には `time`、`host`、`method`、`uri`、`status`、`size`、`reqtime`、`apptime` をこの順に出力する。時間とサイズの値は秒・バイト単位。静的ファイルなど upstream がない応答では `apptime` は `-` になる。ログにはリクエスト本文や Cookie、認証ヘッダーを含めない。
+
+この変更は初回収集時の設定には含まれない。新形式のログファイルができるのは nginx 設定を実機へ反映した後なので、先に dry-run の対象を確認し、設定変更を反映する。
+
+```sh
+./ops/deploy-config.sh nginx --dry-run
+./ops/deploy-config.sh nginx
+```
+
+反映後、現在のアクセスログとエラーログを各アプリサーバーから取得する。
+
+```sh
+./ops/fetch-nginx-logs.sh
+```
+
+ログは `logs/nginx/<UTC日時>-<識別子>/<host>/` 以下にホストごとに保存される。次の `<run>` は実際に作成された取得ディレクトリ名に置き換える。
+
+```sh
+alp ltsv --file logs/nginx/<run>/isu-asia1/access.ltsv.log --sort sum --reverse
+```
+
+`--sort sum --reverse` は集計時間の長い URI から表示する。既定では upstream 応答時間 `apptime` を使い、upstream がない行では `reqtime` にフォールバックする。リクエスト全体の時間で揃えて集計する場合は `--apptime-label reqtime` を指定する。
+
+```sh
+alp ltsv --file logs/nginx/<run>/isu-asia1/access.ltsv.log --sort sum --reverse --apptime-label reqtime
+```
+
+クエリ文字列を集計に含めたい場合は `-q` を指定できる。キー名は alp の LTSV 既定値を使う。`error.log` は LTSV 形式ではなく、障害診断用として別に保存する。反映前に fetch を実行すると新形式のファイルがまだないため、スクリプトは取得に失敗する。形式は [alp のログ形式](https://github.com/tkuchiki/alp#log-format)と [nginx の access log 設定](https://nginx.org/en/docs/http/ngx_http_log_module.html)に合わせている。
 
 PostgreSQL のメイン設定は `conf.d` を読み込む。取得時の有効な設定元は `postgresql.conf` と `conf.d/isucon.conf` だけだった。`postgresql.auto.conf` に有効な設定はなかったため、生成される実行時ファイルとして管理対象外にしている。反映時には、想定外の設定元や `postgresql.auto.conf` に有効な項目があれば処理を拒否する。SSL はホスト側の snakeoil 証明書と秘密鍵を参照するため、どちらもコピーしていない。パスワードや秘密鍵などの秘密情報も含めていない。
 
