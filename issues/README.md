@@ -12,7 +12,7 @@
 
 共通のrun記録、簡単に始められる計測手段、issue別の指標と結果の見せ方は[性能改善候補の計測ガイド](measurement-guide.md)にまとめた。
 
-1. **[14 投稿期間ロック競合](14-posting-window-lock-investigation.md)** — 現masterの投稿作成は共通の投稿期間行を `FOR UPDATE` し、投稿transactionのcommitまで保持するため、同じ地域の異なる利用者の投稿も競合しうる。[05:52:00,05:55:00) UTCの保存ログで100ms以上のduration記録250件、`log_lock_waits` による取得までの待機164件（待機時間合計344.622秒、最大3.926秒）を観測した。ログは累積・複数走行を含み、採点負荷・artifact・得点との因果は未確認。`feat/14` の `f1e07c1` にある `FOR SHARE` 案とDB並行統合テストはmaster未統合で、実機・得点効果も未確認。
+1. **[14 投稿期間ロック競合](14-posting-window-lock-investigation.md)** — 変更前の投稿作成は共通の投稿期間行を `FOR UPDATE` し、投稿transactionのcommitまで保持するため、同じ地域の異なる利用者の投稿も競合しうる。[05:52:00,05:55:00) UTCの保存ログで100ms以上のduration記録250件、`log_lock_waits` による取得までの待機164件（待機時間合計344.622秒、最大3.926秒）を観測した。ログは累積・複数走行を含み、採点負荷・artifact・得点との因果は未確認。[28 投稿期間の共有ロック](28-posting-window-shared-lock.md)として、このブランチに `FOR SHARE` 案とDB並行統合テストを実装済み。master未統合で、実機・得点効果も未確認。
 2. **[16 認可読み取りスコープ](16-scoped-authorization-reads.md)** — 現行feedは認可候補SQL内で関係を判断する一方、事前に取得するviewer関係情報を候補取得へ渡していない。未統合の`feat/16`ではfriendsがある場合feed前SELECTを5回から2回、friendsがない場合4回から2回に削減する。feed活動のDB処理削減が期待できるが、HTTP認可試験・性能・得点の確認は残る。
 3. **[02 閲覧者コンテキスト](02-viewer-context.md)** — 投稿詳細・コメント・RealMoji等で共有される逐次viewer読取をまとめる。未統合の `feat/02` (`47c7a25`) は友達ありで照会を5回から2回、友達なしで4回から2回にする案。複数の読取活動に波及しうる。#16とfeed経路の削減効果を重ねて数えず、残る経路で評価する。
 4. **[18 usersロック](18-users-table-lock-investigation.md)** — [05:52:00,05:55:00) UTCの `log_lock_waits` 記録で、users行ロック取得までの待機61件、テーブルロック21件を観測した。これは `deadlock_timeout=1s` を超えた待機の記録で、最大待機はそれぞれ3.880秒、6.024秒。投稿期間ロック待ちからusers行ロックへ波及する仮説もあるため、まず#14適用前後のblockingを分離する。 登録側はusername一意制約による対策をこのブランチに実装済みだが、DB移行・配備・得点比較は未実施。期間開始側とusers行ロックの調査は継続する。
@@ -55,7 +55,7 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [11 エクスポート](11-export-memory.md) | 未着手 | 小 | 未計測 |
 | [12 プロフィール画像502](12-profile-image-502.md) | 調査中 | 中 | 未計測 |
 | [13 サーバ設定](13-server-settings.md) | 調査中 | 中 | 未計測 |
-| [14 投稿期間ロック競合](14-posting-window-lock-investigation.md) | 調査中（`feat/14` 共有ロック案あり、未統合・採点効果未確認） | 大（仮説） | [05:52:00,05:55:00) UTCに取得までの待機164件、最大3.926秒 |
+| [14 投稿期間ロック競合](14-posting-window-lock-investigation.md) | 調査中（実待ち確認、共有ロック案をこのブランチに実装済み・採点効果未確認） | 大（仮説） | [05:52:00,05:55:00) UTCに取得までの待機164件、最大3.926秒 |
 | [15 空フィード早期判定](15-empty-feed-short-circuit.md) | 一部対応済み（未投稿時の早期空応答。追加条件は未計測） | 小（残余仮説） | 未計測 |
 | [16 認可読み取りスコープ](16-scoped-authorization-reads.md) | 対応中（`feat/16` 実装あり・master未統合、フィードHTTP受入・実測待ち） | 中（仮説） | 未計測 |
 | [17 画像署名CPU](17-image-signature-cpu.md) | 対応済み（state/buffer再利用、同条件比較未確認） | 中（仮説） | 追加走行で署名38.99/73.42秒、PASS・11953点（ユーザー報告、改善幅未確定） |
@@ -69,6 +69,7 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [25 DB接続再利用](25-db-connection-reuse.md) | 対応中（idle16暫定値、地域別open配分と反復・DB資源確認待ち） | 中（仮説） | idle8 10750→idle16 11450点（単発走行、処理量差があり因果未確定） |
 | [26 PostgreSQL索引調査](26-postgresql-index-investigation.md) | 調査中（画像索引HEAD統合、その他候補の実測待ち） | 大（仮説） | 代表following計画で既存索引を確認、全負荷寄与は未判定 |
 | [27 PostgreSQL JIT比較](27-postgresql-jit-comparison.md) | 調査中（スコア改善報告あり、比較条件・採否未確定） | 大（仮説） | 局所SQL改善を単発観測、約5000→約7500点（ユーザー報告、条件未確認） |
+| [28 投稿期間の共有ロック](28-posting-window-shared-lock.md) | 対応済み（このブランチで共有ロック化・並行統合テスト、実機未配備） | 中（仮説） | 未計測 |
 | [29 画像本体のローカルキャッシュ](29-image-body-local-cache.md) | 未着手 | 小（仮説・再利用性を先に確認） | [05:52:00,05:56:00) UTCにID再出現12–15%を観測。実hit率ではない |
 | [30 asia1 CPU profile](30-asia1-cpu-profile.md) | 調査済み（初回・HMAC再利用後のstack帰属） | — | 初回107.78秒、追加走行73.42秒。CPU/allocsの範囲と比較条件は別 |
 | [31 ログレベル入力検証](31-log-level-validation.md) | 未着手 | 小（設定誤り防止） | 不正値がdebug相当になる分岐を確認、性能未計測 |
