@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -55,57 +54,20 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		following := map[string]bool{}
-		if input.Feed == "following" {
-			var followeeIDs []string
-			if err := h.DB.SelectContext(ctx, &followeeIDs, `SELECT followee_id FROM follows WHERE follower_id = $1`, viewer.ID); err != nil {
-				return err
-			}
-			for _, id := range followeeIDs {
-				following[id] = true
-			}
+		if !viewer.HasPostedToday {
+			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
 		}
-		beforePostedAt, beforeID := input.BeforePostedAt, input.BeforeID
-		if ranked {
-			beforePostedAt, beforeID = nil, ""
-		}
-		posts, err := selectPostsWithAuthor(ctx, h.DB, `
-   AND p.author_id <> $1 AND w.ended_at IS NULL
-   AND ($2::timestamptz IS NULL OR (p.posted_at, p.id) < ($2, $3))
-   ORDER BY p.posted_at DESC, p.id DESC
-  `, viewer.ID, beforePostedAt, beforeID)
+		posts, err := selectFeedPosts(ctx, h.DB, viewer, input)
 		if err != nil {
 			return err
 		}
-		candidates := make([]PostWithAuthor, 0)
-		for _, post := range posts {
-			if viewer.canView(post.Post) && matchesFeed(viewer, following, post.Post, input.Feed) {
-				candidates = append(candidates, post)
-			}
-		}
-		var scores map[string]int64
-		if ranked {
-			if scores, err = recommendationScores(ctx, h.DB, viewer, candidates); err != nil {
-				return err
-			}
-			sort.SliceStable(candidates, func(i, j int) bool {
-				return scores[candidates[i].ID] > scores[candidates[j].ID]
-			})
-		}
 		items := make([]feedItemResponse, 0)
-		for _, post := range candidates {
-			score := scores[post.ID]
-			if ranked && input.BeforeScore != nil && !rankedBefore(score, post.Post, *input.BeforeScore, *input.BeforePostedAt, input.BeforeID) {
-				continue
-			}
-			item := feedItemResponse{createPostResponse: newPostResponse(post.Post, post.Author)}
+		for _, result := range posts {
+			item := feedItemResponse{createPostResponse: newPostResponse(result.Post, result.Author)}
 			if ranked {
-				item.Score = &score
+				item.Score = &result.Score
 			}
 			items = append(items, item)
-			if len(items) == 51 {
-				break
-			}
 		}
 		hasMore := len(items) > 50
 		if hasMore {
@@ -115,88 +77,127 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
-func rankedBefore(score int64, post Post, beforeScore int64, beforePostedAt time.Time, beforeID string) bool {
-	if score != beforeScore {
-		return score < beforeScore
-	}
-	if !post.PostedAt.Equal(beforePostedAt) {
-		return post.PostedAt.Before(beforePostedAt)
-	}
-	return post.ID < beforeID
+type feedPostResult struct {
+	PostWithAuthor
+	Score int64 `db:"score"`
 }
 
-func recommendationScores(ctx context.Context, db sqlx.QueryerContext, viewer viewerContext, posts []PostWithAuthor) (map[string]int64, error) {
-	scores := make(map[string]int64, len(posts))
-	if len(posts) == 0 {
-		return scores, nil
+// selectFeedPosts applies eligibility and pagination before loading the page's
+// full post and author records. Ranked feeds must score every eligible
+// candidate before limiting, so their first CTE contains only lightweight IDs.
+func selectFeedPosts(ctx context.Context, db sqlx.QueryerContext, viewer viewerContext, input getFeedRequest) ([]feedPostResult, error) {
+	feedPredicate := ""
+	switch input.Feed {
+	case "public":
+		feedPredicate = `AND p.visibility = 'public'`
+	case "friends":
+		feedPredicate = `AND EXISTS (SELECT 1 FROM friendships f WHERE (f.user_low_id = $1 AND f.user_high_id = p.author_id) OR (f.user_high_id = $1 AND f.user_low_id = p.author_id))`
+	case "following":
+		feedPredicate = `AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.followee_id = p.author_id)`
 	}
-	authorIDs := make([]string, 0, len(posts))
-	postIDs := make([]string, 0, len(posts))
-	for _, post := range posts {
-		authorIDs = append(authorIDs, post.AuthorID)
-		postIDs = append(postIDs, post.ID)
+	visibilityPredicate := `AND (p.visibility = 'public'
+      OR (p.visibility = 'friends' AND EXISTS (SELECT 1 FROM friendships f WHERE (f.user_low_id = $1 AND f.user_high_id = p.author_id) OR (f.user_high_id = $1 AND f.user_low_id = p.author_id)))
+      OR (p.visibility = 'friends_of_friends' AND (
+        EXISTS (SELECT 1 FROM friendships f WHERE (f.user_low_id = $1 AND f.user_high_id = p.author_id) OR (f.user_high_id = $1 AND f.user_low_id = p.author_id))
+        OR EXISTS (
+          SELECT 1 FROM friendships vf
+          JOIN friendships af ON af.user_low_id = CASE WHEN vf.user_low_id = $1 THEN vf.user_high_id ELSE vf.user_low_id END
+                            OR af.user_high_id = CASE WHEN vf.user_low_id = $1 THEN vf.user_high_id ELSE vf.user_low_id END
+          WHERE (vf.user_low_id = $1 OR vf.user_high_id = $1)
+            AND CASE WHEN af.user_low_id = CASE WHEN vf.user_low_id = $1 THEN vf.user_high_id ELSE vf.user_low_id END THEN af.user_high_id ELSE af.user_low_id END = p.author_id
+        )
+      )))`
+	if input.Feed == "friends" {
+		// The feed predicate already requires a direct friendship, so every supported visibility is viewable; the general friends-of-friends search would repeat a large graph traversal for no additional authorization.
+		visibilityPredicate = `AND p.visibility IN ('public', 'friends', 'friends_of_friends')`
+	}
+	base := `
+  FROM posts p
+  JOIN posting_windows w ON w.id = p.posting_window_id
+  JOIN users u ON u.id = p.author_id AND u.status = 'active'
+  WHERE p.deleted_at IS NULL AND p.author_id <> $1 AND w.ended_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM block_relations b WHERE (b.blocker_id = $1 AND b.blocked_id = p.author_id) OR (b.blocked_id = $1 AND b.blocker_id = p.author_id))
+    ` + visibilityPredicate + `
+    ` + feedPredicate
+
+	if input.Feed != "friends-of-friends" {
+		query := `SELECT ` + postColumns + `, ` + userColumnsAs("u", "author") + `, 0::bigint AS score` + base + `
+  AND ($2::timestamptz IS NULL OR (p.posted_at, p.id COLLATE "C") < ($2, $3::varchar COLLATE "C"))
+  ORDER BY p.posted_at DESC, p.id COLLATE "C" DESC LIMIT 51`
+		var posts []feedPostResult
+		if err := sqlx.SelectContext(ctx, db, &posts, query, viewer.ID, input.BeforePostedAt, input.BeforeID); err != nil {
+			return nil, err
+		}
+		for i := range posts {
+			if err := posts[i].Author.setImageKey(); err != nil {
+				return nil, err
+			}
+		}
+		return posts, nil
 	}
 
-	query, args, err := sqlx.In(`SELECT user_low_id, user_high_id FROM friendships WHERE user_low_id IN (?) OR user_high_id IN (?)`, authorIDs, authorIDs)
-	if err != nil {
+	query := `WITH viewer_friends AS (
+  SELECT CASE WHEN user_low_id = $1 THEN user_high_id ELSE user_low_id END AS id
+  FROM friendships WHERE user_low_id = $1 OR user_high_id = $1
+), viewer_mutuals AS (
+  SELECT CASE WHEN f.user_low_id = vf.id THEN f.user_high_id ELSE f.user_low_id END AS id, count(*)::bigint AS count
+  FROM viewer_friends vf JOIN friendships f ON f.user_low_id = vf.id OR f.user_high_id = vf.id
+  WHERE f.user_low_id <> $1 AND f.user_high_id <> $1
+  GROUP BY 1
+), candidates AS (
+  SELECT p.id, p.author_id, p.posted_at
+  FROM posts p
+  JOIN posting_windows w ON w.id = p.posting_window_id
+  JOIN users u ON u.id = p.author_id AND u.status = 'active'
+  LEFT JOIN viewer_mutuals candidate_mutual ON candidate_mutual.id = p.author_id
+  WHERE p.deleted_at IS NULL AND p.author_id <> $1 AND w.ended_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM block_relations b WHERE (b.blocker_id = $1 AND b.blocked_id = p.author_id) OR (b.blocked_id = $1 AND b.blocker_id = p.author_id))
+    AND NOT EXISTS (SELECT 1 FROM viewer_friends vf WHERE vf.id = p.author_id)
+    AND candidate_mutual.count > 0
+    AND p.visibility IN ('public', 'friends_of_friends')
+), author_connections AS (
+  SELECT a.author_id, sum(coalesce(vm.count, 0))::bigint AS score
+  FROM (SELECT DISTINCT author_id FROM candidates) a
+  JOIN friendships f ON f.user_low_id = a.author_id OR f.user_high_id = a.author_id
+  LEFT JOIN viewer_mutuals vm ON vm.id = CASE WHEN f.user_low_id = a.author_id THEN f.user_high_id ELSE f.user_low_id END
+  GROUP BY a.author_id
+), engagements AS (
+  SELECT post_id, user_id FROM (
+    SELECT r.post_id, r.reactor_id AS user_id FROM realmojis r
+    JOIN candidates c ON c.id = r.post_id JOIN users eu ON eu.id = r.reactor_id AND eu.status = 'active'
+    WHERE r.replaced_at IS NULL AND r.deleted_at IS NULL
+    UNION
+    SELECT cm.post_id, cm.author_id AS user_id FROM comments cm
+    JOIN candidates c ON c.id = cm.post_id JOIN users eu ON eu.id = cm.author_id AND eu.status = 'active'
+    WHERE cm.deleted_at IS NULL
+  ) e JOIN viewer_friends vf ON vf.id = e.user_id
+), engagement_counts AS (
+  SELECT post_id, count(*)::bigint AS count FROM engagements GROUP BY post_id
+), scored AS (
+  SELECT c.id, c.author_id, c.posted_at,
+    10 * coalesce(ec.count, 0) + 3 * coalesce(vm.count, 0) + least(coalesce(ac.score, 0), 30) AS score
+  FROM candidates c
+  LEFT JOIN engagement_counts ec ON ec.post_id = c.id
+  LEFT JOIN viewer_mutuals vm ON vm.id = c.author_id
+  LEFT JOIN author_connections ac ON ac.author_id = c.author_id
+), page AS (
+  SELECT * FROM scored
+  WHERE ($2::bigint IS NULL OR (score, posted_at, id COLLATE "C") < ($2, $3, $4::varchar COLLATE "C"))
+  ORDER BY score DESC, posted_at DESC, id COLLATE "C" DESC LIMIT 51
+)
+SELECT ` + postColumns + `, ` + userColumnsAs("u", "author") + `, page.score
+FROM page JOIN posts p ON p.id = page.id
+JOIN posting_windows w ON w.id = p.posting_window_id
+JOIN users u ON u.id = p.author_id AND u.status = 'active'
+ORDER BY page.score DESC, page.posted_at DESC, page.id COLLATE "C" DESC`
+	var posts []feedPostResult
+	if err := sqlx.SelectContext(ctx, db, &posts, query, viewer.ID, input.BeforeScore, input.BeforePostedAt, input.BeforeID); err != nil {
 		return nil, err
 	}
-	var friendships []struct {
-		UserLowID  string `db:"user_low_id"`
-		UserHighID string `db:"user_high_id"`
-	}
-	if err := sqlx.SelectContext(ctx, db, &friendships, sqlx.Rebind(sqlx.DOLLAR, query), args...); err != nil {
-		return nil, err
-	}
-	connections := map[string]int64{}
-	for _, friendship := range friendships {
-		connections[friendship.UserLowID] += int64(viewer.MutualFriends[friendship.UserHighID])
-		connections[friendship.UserHighID] += int64(viewer.MutualFriends[friendship.UserLowID])
-	}
-
-	query, args, err = sqlx.In(`
-  SELECT r.post_id, r.reactor_id AS user_id FROM realmojis r
-  JOIN users u ON u.id = r.reactor_id AND u.status = 'active'
-  WHERE r.post_id IN (?) AND r.replaced_at IS NULL AND r.deleted_at IS NULL
-  UNION
-  SELECT c.post_id, c.author_id AS user_id FROM comments c
-  JOIN users u ON u.id = c.author_id AND u.status = 'active'
-  WHERE c.post_id IN (?) AND c.deleted_at IS NULL
- `, postIDs, postIDs)
-	if err != nil {
-		return nil, err
-	}
-	var engagements []struct {
-		PostID string `db:"post_id"`
-		UserID string `db:"user_id"`
-	}
-	if err := sqlx.SelectContext(ctx, db, &engagements, sqlx.Rebind(sqlx.DOLLAR, query), args...); err != nil {
-		return nil, err
-	}
-	friendEngagements := map[string]int64{}
-	for _, engagement := range engagements {
-		if viewer.Friends[engagement.UserID] {
-			friendEngagements[engagement.PostID]++
+	for i := range posts {
+		if err := posts[i].Author.setImageKey(); err != nil {
+			return nil, err
 		}
 	}
-
-	for _, post := range posts {
-		scores[post.ID] = 10*friendEngagements[post.ID] + 3*int64(viewer.MutualFriends[post.AuthorID]) + min(connections[post.AuthorID], 30)
-	}
-	return scores, nil
-}
-
-func matchesFeed(viewer viewerContext, following map[string]bool, post Post, feed string) bool {
-	switch feed {
-	case "public":
-		return post.Visibility == "public"
-	case "following":
-		return following[post.AuthorID]
-	case "friends":
-		return viewer.Friends[post.AuthorID]
-	case "friends-of-friends":
-		return !viewer.Friends[post.AuthorID] && viewer.FriendsOfFriends[post.AuthorID]
-	default:
-		return false
-	}
+	return posts, nil
 }
