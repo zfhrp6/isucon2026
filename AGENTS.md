@@ -1,5 +1,10 @@
 必要があれば、別リポジトリ `"$(git rev-parse --show-toplevel)/../isucon_agent_skills/research/analysis"` などを参考にしてもよい
 
+## ログの参照先
+
+- `logs/` はGit管理外で、ログは本体リポジトリ `/home/zfhrp/workspace/isucon2026/logs` にのみ配置する。linked worktree内にはないため、見つからない場合は本体の `logs/` を参照する。
+- 本体の場所が分からない場合は `git worktree list` で確認する。
+
 ## 検証
 
 - Goファイルを作成・変更した場合は、対象Goモジュールのディレクトリで`go fmt ./...`と`go test ./...`を実行する。
