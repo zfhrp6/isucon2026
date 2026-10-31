@@ -19,8 +19,9 @@ The deploy stages the source, builds it on each server, installs the local
 host-specific base environment and shared application settings, atomically
 replaces the binary, and restarts isureal-go. Each base file must exist under
 ops/env/<host>/env.sh.
-The final check confirms only that the systemd unit is active; it does not
-test HTTP behavior. SQL and static assets are deployed separately.
+After restart it verifies both the systemd active state and the idle setting in
+the running process environment. It does not test HTTP behavior. SQL and
+static assets are deployed separately.
 
 --dry-run prints the validated plan without invoking ssh or rsync.
 EOF
@@ -49,15 +50,25 @@ done
 readonly script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly repo_root=$(cd -- "$script_dir/.." && pwd)
 readonly source_dir="$repo_root/webapp/go"
-readonly app_env_source="$repo_root/ops/config/app.env.sh"
+readonly app_env_source="$repo_root/ops/config/app.env"
 readonly host_env_dir="$repo_root/$LOCAL_HOST_ENV_DIR_NAME"
 [[ -d "$source_dir" ]] || die 'Go source directory not found'
 [[ -f "$source_dir/go.mod" ]] || die 'go.mod not found'
 [[ -f "$source_dir/cmd/isureal/main.go" ]] || die 'Go entry point not found'
 [[ -f "$app_env_source" && -r "$app_env_source" ]] || die 'shared application environment file not readable'
-if ! bash -n -- "$app_env_source" >/dev/null 2>&1; then
-	die 'invalid shell syntax in shared application environment file'
-fi
+app_env_value=''
+while IFS= read -r line || [[ -n "$line" ]]; do
+	case "$line" in
+		''|'#'*) continue ;;
+		ISUREAL_DB_MAX_IDLE_CONNS=*)
+			[[ -z "$app_env_value" ]] || die 'duplicate key in shared application environment file'
+			app_env_value=${line#*=}
+			[[ "$app_env_value" =~ ^(0|[1-9]|[12][0-9]|30)$ ]] || die 'invalid shared idle connection value; expected an integer from 0 to 30'
+			;;
+		*) die 'unsupported line in shared application environment file' ;;
+	esac
+done < "$app_env_source"
+[[ -n "$app_env_value" ]] || die 'shared application environment file is missing ISUREAL_DB_MAX_IDLE_CONNS'
 declare -A host_env_sources=()
 for host in "${APP_HOSTS[@]}"; do
 	host_env_source="$host_env_dir/$host/env.sh"
@@ -74,7 +85,7 @@ done
 
 if $dry_run; then
 	printf 'Source: %s\n' "$source_dir"
-	printf 'Shared settings: %s -> %s\n' "$app_env_source" "$REMOTE_APP_ENV_FILE"
+	printf 'Shared setting: %s (idle connections %s, appended to each host env file)\n' "$app_env_source" "$app_env_value"
 	for host in "${APP_HOSTS[@]}"; do
 		printf 'Host environment: %s -> %s\n' "${host_env_sources[$host]}" "$host:$REMOTE_ENV_FILE"
 		printf 'Would build, install application and settings, and restart isureal-go on %s\n' "$host"
@@ -101,7 +112,7 @@ for host in "${APP_HOSTS[@]}"; do
 		ssh "$host" "rm -rf -- '$stage'" || true
 		die "source transfer failed for $host"
 	fi
-	if ! rsync -az --chmod=F600 "$app_env_source" "$host:$stage/app.env.sh"; then
+	if ! rsync -az --chmod=F600 "$app_env_source" "$host:$stage/app.env"; then
 		ssh "$host" "rm -rf -- '$stage'" || true
 		die "shared settings transfer failed for $host"
 	fi
@@ -109,14 +120,14 @@ for host in "${APP_HOSTS[@]}"; do
 		ssh "$host" "rm -rf -- '$stage'" || true
 		die "host environment transfer failed for $host"
 	fi
-	if ! ssh "$host" "bash -s -- '$stage' '$REMOTE_APP_DIR' '$REMOTE_GO' '$REMOTE_ENV_FILE' '$REMOTE_APP_ENV_FILE'" <<'REMOTE'
+	if ! ssh "$host" "bash -s -- '$stage' '$REMOTE_APP_DIR' '$REMOTE_GO' '$REMOTE_ENV_FILE' '$REMOTE_APP_ENV_FILE' '$app_env_value'" <<'REMOTE'
 set -Eeuo pipefail
 stage=$1
 app_dir=$2
 go_bin=$3
 env_file=$4
 app_env_file=$5
-source_line='. /home/isucon/isureal-app-env.sh'
+app_env_value=$6
 env_backup=''
 app_env_backup=''
 env_changed=false
@@ -126,7 +137,6 @@ env_existed=false
 env_mode=''
 app_env_mode=''
 env_next=''
-app_env_next=''
 binary_next=''
 
 restore_file() {
@@ -172,7 +182,7 @@ cleanup() {
 			rm -f -- "$app_env_backup" || printf 'WARNING: temporary backup remains at %s\n' "$app_env_backup" >&2
 		fi
 	fi
-	for temporary in "$env_next" "$app_env_next" "$binary_next" "${env_file}.next" "${app_env_file}.next"; do
+	for temporary in "$env_next" "$binary_next" "${env_file}.next" "${app_env_file}.next"; do
 		if [[ -n "$temporary" ]]; then
 			rm -f -- "$temporary" || printf 'WARNING: temporary file remains at %s\n' "$temporary" >&2
 		fi
@@ -185,12 +195,12 @@ trap cleanup EXIT
 umask 077
 exec 9>/home/isucon/.isureal-deploy.lock
 flock -x 9
-if [[ -e "$env_file" ]]; then
+if [[ -e "$env_file" || -L "$env_file" ]]; then
 	[[ -f "$env_file" && ! -L "$env_file" ]] || { printf 'base environment path is not a regular file\n' >&2; exit 1; }
 	env_existed=true
 	env_mode=$(stat -c '%a' -- "$env_file")
 fi
-if [[ -e "$app_env_file" ]]; then
+if [[ -e "$app_env_file" || -L "$app_env_file" ]]; then
 	[[ -f "$app_env_file" && ! -L "$app_env_file" ]] || { printf 'shared application settings path is not a regular file\n' >&2; exit 1; }
 	app_env_existed=true
 	app_env_mode=$(stat -c '%a' -- "$app_env_file")
@@ -207,29 +217,54 @@ if [[ "$app_env_existed" == true ]]; then
 	app_env_backup=$(mktemp "${app_env_file}.rollback.XXXXXX")
 	install -m 0600 -- "$app_env_file" "$app_env_backup"
 fi
-printf 'Rollback backups on this host: env=%s app-env=%s\n' "${env_backup:-none}" "${app_env_backup:-none}"
+printf 'Rollback backups on this host: env=%s legacy-app-env=%s\n' "${env_backup:-none}" "${app_env_backup:-none}"
 
 env_next=$(mktemp "${env_file}.next.XXXXXX")
-install -m 0600 -- "$stage/host.env.sh" "$env_next"
-if ! grep -Eq '^[[:space:]]*(source|\.)[[:space:]]+/home/isucon/isureal-app-env\.sh([[:space:]]|$)' "$env_next"; then
-	printf '\n%s\n' "$source_line" >> "$env_next"
-fi
+awk '
+/^[[:space:]]*(source|\.)[[:space:]]+\/home\/isucon\/isureal-app-env\.sh([[:space:]]|$)/ { next }
+/^[[:space:]]*(export[[:space:]]+)?ISUREAL_DB_MAX_IDLE_CONNS=/ { next }
+{ print }
+' "$stage/host.env.sh" > "$env_next"
+printf '\n' >> "$env_next"
+cat -- "$stage/app.env" >> "$env_next"
+printf '\n' >> "$env_next"
 
-app_env_next=$(mktemp "${app_env_file}.next.XXXXXX")
-install -m 0644 -- "$stage/app.env.sh" "$app_env_next"
 binary_next=$(mktemp "$app_dir/isureal.next.XXXXXX")
 install -m 0755 -- isureal "$binary_next"
 
-mv -f -- "$app_env_next" "$app_env_file"
-app_env_changed=true
 mv -f -- "$env_next" "$env_file"
 env_changed=true
+if [[ "$app_env_existed" == true ]]; then
+	rm -f -- "$app_env_file"
+	app_env_changed=true
+fi
 mv -f -- "$binary_next" "$app_dir/isureal"
 sudo -n systemctl restart isureal-go
 systemctl is-active --quiet isureal-go
+main_pid=$(systemctl show --property=MainPID --value isureal-go)
+[[ "$main_pid" =~ ^[1-9][0-9]*$ ]] || { printf 'service has no running main process after restart\n' >&2; exit 1; }
+actual_idle_value=''
+actual_idle_count=0
+while IFS= read -r -d '' environment_entry; do
+	case "$environment_entry" in
+		ISUREAL_DB_MAX_IDLE_CONNS=*)
+			actual_idle_count=$((actual_idle_count + 1))
+			candidate_idle_value=${environment_entry#*=}
+			if [[ "$candidate_idle_value" =~ ^(0|[1-9]|[12][0-9]|30)$ ]]; then
+				actual_idle_value=$candidate_idle_value
+			else
+				actual_idle_value=non-numeric
+			fi
+			;;
+	esac
+done < "/proc/$main_pid/environ"
+if [[ "$actual_idle_count" -ne 1 || "$actual_idle_value" != "$app_env_value" ]]; then
+	printf 'running process idle setting mismatch: expected=%s actual=%s count=%s\n' "$app_env_value" "$actual_idle_value" "$actual_idle_count" >&2
+	exit 1
+fi
 REMOTE
 	then
 		die "build, configuration install, or service restart failed for $host"
 	fi
-	printf 'Application and shared settings installed; service restart and active-state check passed on %s (HTTP unverified)\n' "$host"
+	printf 'Application and settings installed; service restart and idle setting %s verified on %s (HTTP unverified)\n' "$app_env_value" "$host"
 done
