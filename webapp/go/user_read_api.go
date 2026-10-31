@@ -122,5 +122,9 @@ func getUserHandler(h *HandlerContext) echo.HandlerFunc {
 }
 
 func newRelationshipUserResponse(user User) relationshipUserResponse {
-	return relationshipUserResponse{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, ProfileImageURL: newGetMeResponse(user).ProfileImageURL, Bio: user.Bio, AccountType: user.AccountType}
+	return newRelationshipUserResponseWithProfileImageURL(user, newGetMeResponse(user).ProfileImageURL)
+}
+
+func newRelationshipUserResponseWithProfileImageURL(user User, profileImageURL *string) relationshipUserResponse {
+	return relationshipUserResponse{ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, ProfileImageURL: profileImageURL, Bio: user.Bio, AccountType: user.AccountType}
 }

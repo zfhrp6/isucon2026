@@ -84,9 +84,10 @@ func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, st
 		return response, err
 	}
 	items := make([]memoryPostResponse, 0, len(posts))
+	profileImageURLs := newProfileImageURLSigner()
 	for _, post := range posts {
 		items = append(items, memoryPostResponse{
-			createPostResponse: newPostResponse(post.Post, post.Author),
+			createPostResponse: newPostResponseWithProfileImageSigner(post.Post, post.Author, profileImageURLs),
 			RealMojis:          make([]replaceRealMojiResponse, 0),
 			Comments:           make([]createCommentResponse, 0),
 		})
@@ -95,14 +96,14 @@ func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, st
 	if response.HasMore {
 		items = items[:50]
 	}
-	if err := loadMemoryInteractions(ctx, db, items); err != nil {
+	if err := loadMemoryInteractions(ctx, db, items, profileImageURLs); err != nil {
 		return response, err
 	}
 	response.Items = items
 	return response, nil
 }
 
-func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items []memoryPostResponse) error {
+func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items []memoryPostResponse, profileImageURLs *profileImageURLSigner) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -124,7 +125,7 @@ func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items [
 	for _, reaction := range reactions {
 		item := itemByPostID[reaction.PostID]
 		if len(item.RealMojis) < 50 {
-			item.RealMojis = append(item.RealMojis, newRealMojiResponse(reaction.RealMoji, reaction.Reactor))
+			item.RealMojis = append(item.RealMojis, newRealMojiResponseWithProfileImageSigner(reaction.RealMoji, reaction.Reactor, profileImageURLs))
 		}
 	}
 
@@ -139,7 +140,7 @@ func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items [
 	for _, comment := range comments {
 		item := itemByPostID[comment.PostID]
 		if len(item.Comments) < 50 {
-			item.Comments = append(item.Comments, newCommentResponse(comment.Comment, comment.Author))
+			item.Comments = append(item.Comments, newCommentResponseWithProfileImageSigner(comment.Comment, comment.Author, profileImageURLs))
 		}
 	}
 	return nil

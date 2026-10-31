@@ -29,7 +29,15 @@ type replaceRealMojiResponse struct {
 }
 
 func newRealMojiResponse(reaction RealMoji, user User) replaceRealMojiResponse {
-	return replaceRealMojiResponse{ID: reaction.ID, Reactor: newRelationshipUserResponse(user), ReactionType: reaction.ReactionType, ImageURL: signedImageURL(user, reaction.ImageID), CreatedAt: reaction.CreatedAt}
+	return newRealMojiResponseWithProfileImageURL(reaction, user, newGetMeResponse(user).ProfileImageURL)
+}
+
+func newRealMojiResponseWithProfileImageSigner(reaction RealMoji, user User, signer *profileImageURLSigner) replaceRealMojiResponse {
+	return newRealMojiResponseWithProfileImageURL(reaction, user, signer.profileImageURL(user))
+}
+
+func newRealMojiResponseWithProfileImageURL(reaction RealMoji, user User, profileImageURL *string) replaceRealMojiResponse {
+	return replaceRealMojiResponse{ID: reaction.ID, Reactor: newRelationshipUserResponseWithProfileImageURL(user, profileImageURL), ReactionType: reaction.ReactionType, ImageURL: signedImageURL(user, reaction.ImageID), CreatedAt: reaction.CreatedAt}
 }
 
 func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {

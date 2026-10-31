@@ -74,7 +74,7 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [31 ログレベル入力検証](31-log-level-validation.md) | 未着手 | 小（設定誤り防止） | 不正値がdebug相当になる分岐を確認、性能未計測 |
 | [32 フィード51件目の加工](32-feed-response-page-limit.md) | 未着手 | 小 | 応答構築後に切り詰めるコードを確認、性能未計測 |
 | [33 関係一覧51件目の加工](33-relationship-response-page-limit.md) | 未着手 | 小 | 応答構築後に切り詰めるコードを確認、性能未計測 |
-| [34 画像署名の重複排除・キャッシュ](34-response-image-signature-reuse.md) | 未着手 | 中（重複率依存） | 要求内再利用を先行。プロセス内cacheはhit率・容量・初期化条件を評価 |
+| [34 画像署名の重複排除・キャッシュ](34-response-image-signature-reuse.md) | 対応中（Memories・export実装、実機比較待ち） | 中（重複率依存） | 同一プロフィール30回の局所benchmarkでCPU・割り当て削減。API・得点は未計測。プロセス内cacheは追加候補 |
 | [35 固定SQL列リスト](35-fixed-user-sql-projection.md) | 未着手 | 小 | 固定文字列の再生成を確認、CPU/allocs寄与未計測 |
 | [36 現在投稿の逐次取得](36-current-post-read-roundtrips.md) | 未着手 | 小 | 認証以外に3回SELECTするコードを確認、効果未計測 |
 
