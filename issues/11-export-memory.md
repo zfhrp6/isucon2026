@@ -17,6 +17,10 @@
 
 [`exportPostsHandler`](../webapp/go/export_api.go#L18) は全投稿と全 `bytea` 画像をスライスへ読み込み、`bytes.Buffer` にZIP全体を作ってからレスポンスへ返す。同じ画像データがDB結果・ZIPバッファ・応答時に同時にメモリを占めうる。
 
+## CPU profileで確認した経路
+
+2026-10-31のasia1 CPU profile活動4区間では、`exportPostsHandler`から呼ぶ`newPostResponse`配下の署名stackを19.85秒観測した。これはexport処理全体のAPI latencyやpeak memoryではなくGo CPU samplesの内数である。DBからの画像一括読み出しとZIP全体を保持する現行経路は別のメモリ仮説で、RSS・heap peakやexport完了率は未計測。stack情報は[issue 30](30-asia1-cpu-profile.md)、署名候補は[issue 17](17-image-signature-cpu.md)に集約する。
+
 ## 改善方針
 
 ZIPをレスポンスへ段階的に書くか、画像を順次読み出してバッファを解放し、ピークメモリを抑える。HTTP途中失敗時のZIP不完全応答を扱える形とし、まず競技規模の件数・画像サイズでピークRSSと完了時間を測る。

@@ -24,4 +24,5 @@ official_resource/
 # Retrieved operational logs
 /logs/nginx/
 /logs/postgresql/
+/logs/pprof/
 

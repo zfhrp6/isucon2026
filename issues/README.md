@@ -18,7 +18,7 @@
 4. **[18 usersロック](18-users-table-lock-investigation.md)** — [05:52:00,05:55:00) UTCの `log_lock_waits` 記録で、users行ロック取得までの待機61件、テーブルロック21件を観測した。これは `deadlock_timeout=1s` を超えた待機の記録で、最大待機はそれぞれ3.880秒、6.024秒。投稿期間ロック待ちからusers行ロックへ波及する仮説もあるため、まず#14適用前後のblockingを分離する。
 5. **[07 通知ポーリング](07-notification-polling.md)** — SSE接続ごとに500msごとに利用者と通知の照会を行う。待機接続数に応じてDB仕事量が増え、通知の遅れが高配点の投稿後検証時間を削る可能性がある。実際の同時接続数、DB負荷、通知から投稿までの遅れは未計測なので、相関を確認してから対策する。
 6. **[03 セッション索引](03-session-lookup.md) / [26 PostgreSQL索引調査](26-postgresql-index-investigation.md)** — `token_hash`索引がなければ認証必須APIの頻出照会に有効な可能性がある。ただし実DBカタログ、セッション件数、実行時間の最新確認が必要。現DDLだけから索引追加の性能効果は断定しない。
-7. **[17 画像署名CPU](17-image-signature-cpu.md)** — 署名ごとに1,000回のHMACを構築し、feedが多くのURLを返す場合にCPU費用が増えうる。CPU profileが未取得であり、CPU律速が確認された場合に順位を上げる。画像DB時間や短い応答本文の原因とはみなさない。
+7. **[17 画像署名CPU](17-image-signature-cpu.md)** — asia1のCPU profile活動4区間では`imageSignature` stackがGo CPU samplesの63.26%を占めた。Memories・export・feedが主な署名callerだった。CPU寄与は確認したが、採点区間・得点効果・最適化後の改善は未確認。
 8. **[25 DB接続再利用](25-db-connection-reuse.md)の残る比較** — idle16は採用済み。地域別open上限は現HEADにあるが比較未実施。pool待ちを確認する価値はある一方、接続上限を増やしてもDBロック競合は解消しないため#14/16/02の結果と合わせて判断する。
 9. **[04 ユーザー検索](04-user-search.md) / [05 Memories交流取得](05-interaction-reads.md)** — いずれも行数削減の余地はコード上にあるが、取得行数・SQL時間・採点寄与は未計測。#04はUnicode照合契約、#05は投稿ごとの件数・順序を保つ必要があるため、実測してから着手する。
 10. **[29 画像本体ローカルキャッシュ](29-image-body-local-cache.md)** — [05:52:00,05:56:00) UTCの累積ログで画像IDの再出現は地域別約12–15%。これは同一走行内のキャッシュhit率ではなく、cold demand-cacheの機会を示すだけ。認可DB照会とcold missのblob転送は残るため、現時点の期待効果は小さい。
@@ -58,18 +58,19 @@ PostgreSQL実機の代表フィードSQLでは、JITを一時的に無効化し�
 | [14 投稿期間ロック競合](14-posting-window-lock-investigation.md) | 調査中（`feat/14` 共有ロック案あり、未統合・採点効果未確認） | 大（仮説） | [05:52:00,05:55:00) UTCに取得までの待機164件、最大3.926秒 |
 | [15 空フィード早期判定](15-empty-feed-short-circuit.md) | 一部対応済み（未投稿時の早期空応答。追加条件は未計測） | 小（残余仮説） | 未計測 |
 | [16 認可読み取りスコープ](16-scoped-authorization-reads.md) | 対応中（`feat/16` の`4844488`、未統合・HTTP受入確認待ち） | 中（仮説） | 未計測 |
-| [17 画像署名CPU](17-image-signature-cpu.md) | 未着手 | 中（仮説） | 未計測 |
+| [17 画像署名CPU](17-image-signature-cpu.md) | 調査中（asia1 CPU profileで署名寄与確認） | 中（仮説） | 活動4区間でCPU samples68.18/107.78秒（63.26%）、得点効果未計測 |
 | [18 usersテーブルロック](18-users-table-lock-investigation.md) | 調査中（待機を追加観測、blocking関係未確認） | 中（仮説） | [05:52:00,05:55:00) UTCに取得までの待機：行61件、テーブル21件 |
 | [19 初期データ復元](19-initial-data-reset-restoration.md) | 未着手 | 大（失敗防止仮説） | 未計測 |
 | [20 IP ban初期化整合性](20-ip-ban-init-consistency.md) | 未着手 | 小（正しさ仮説） | 未計測 |
 | [21 残る書き込み往復](21-remaining-write-roundtrips.md) | 未着手 | 中（仮説） | 未計測 |
-| [22 JPEG寸法事前判定](22-jpeg-dimension-preflight.md) | 未着手 | 小（仮説） | 未計測 |
+| [22 JPEG寸法事前判定](22-jpeg-dimension-preflight.md) | 調査中（create-post decode寄与確認） | 小（仮説） | JPEG decode18.93/107.78秒（17.56%）、大半はcreate-post、改善効果未計測 |
 | [23 デプロイ来歴](23-deployment-provenance.md) | 未着手 | 中（再現性仮説） | 未計測 |
 | [24 採点経路計測](24-scoring-path-measurement.md) | 調査中 | 大（調査価値） | 未計測 |
 | [25 DB接続再利用](25-db-connection-reuse.md) | 対応中（idle16暫定値、地域別open配分と反復・DB資源確認待ち） | 中（仮説） | idle8 10750→idle16 11450点（単発走行、処理量差があり因果未確定） |
 | [26 PostgreSQL索引調査](26-postgresql-index-investigation.md) | 調査中（画像索引HEAD統合、その他候補の実測待ち） | 大（仮説） | 代表following計画で既存索引を確認、全負荷寄与は未判定 |
 | [27 PostgreSQL JIT比較](27-postgresql-jit-comparison.md) | 調査中（スコア改善報告あり、比較条件・採否未確定） | 大（仮説） | 局所SQL改善を単発観測、約5000→約7500点（ユーザー報告、条件未確認） |
 | [29 画像本体のローカルキャッシュ](29-image-body-local-cache.md) | 未着手 | 小（仮説・再利用性を先に確認） | [05:52:00,05:56:00) UTCにID再出現12–15%を観測。実hit率ではない |
+| [30 asia1 CPU profile](30-asia1-cpu-profile.md) | 調査済み（stack帰属） | — | 4区間120.017秒、Go CPU samples107.78秒。採点効果未確認 |
 
 未達の受け入れ条件が同じissueの範囲なら、そのissueに残す。別の原因・目的・仮説は新しいissueに分けて相互リンクする。状態と期待効果・実測効果を混同しない。対応済みの範囲へ別課題を継ぎ足さない。issue 10の初期化・永続性・再起動条件は優先順位の候補ではなく、全変更に適用する。
 
