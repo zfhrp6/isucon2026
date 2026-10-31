@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,9 +51,19 @@ func createCommentHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
+		var user User
 		for _, id := range slices.Compact([]string{min(actor, post.AuthorID), max(actor, post.AuthorID)}) {
-			var lockedID string
-			if err := tx.GetContext(ctx, &lockedID, `SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE`, id); err != nil {
+			var err error
+			if id == actor {
+				err = tx.GetContext(ctx, &user, `SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE id=$1 FOR NO KEY UPDATE`, id)
+				if err == nil {
+					err = user.setImageKey()
+				}
+			} else {
+				var lockedID string
+				err = tx.GetContext(ctx, &lockedID, `SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE`, id)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -63,16 +74,8 @@ func createCommentHandler(h *HandlerContext) echo.HandlerFunc {
 		if !allowed {
 			return NewAPIError(http.StatusForbidden, "interaction_forbidden")
 		}
-		id := uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO comments(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,clock_timestamp())`, id, post.ID, actor, input.Body); err != nil {
-			return err
-		}
-		comment, err := getComment(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		user, err := getUser(ctx, tx, actor)
-		if err != nil {
+		var comment Comment
+		if err := tx.GetContext(ctx, &comment, `INSERT INTO comments(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,clock_timestamp()) RETURNING id,post_id,author_id,body,created_at,deleted_at`, uuid.NewString(), post.ID, actor, input.Body); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {

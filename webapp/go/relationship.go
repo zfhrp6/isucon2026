@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,6 +46,37 @@ func beginRelationshipTx(ctx context.Context, db *sqlx.DB, actor, target string)
 		}
 	}
 	return tx, nil
+}
+
+func beginRelationshipTxWithActor(ctx context.Context, db *sqlx.DB, actor, target string) (*sqlx.Tx, User, error) {
+	if actor == target || target == "" {
+		return nil, User{}, NewAPIError(http.StatusBadRequest, "invalid_relationship")
+	}
+	tx, err := db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, User{}, err
+	}
+	var actorUser User
+	for _, id := range []string{min(actor, target), max(actor, target)} {
+		var err error
+		if id == actor {
+			err = tx.GetContext(ctx, &actorUser, `SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE id=$1 AND status='active' FOR NO KEY UPDATE`, id)
+			if err == nil {
+				err = actorUser.setImageKey()
+			}
+		} else {
+			var lockedID string
+			err = tx.GetContext(ctx, &lockedID, `SELECT id FROM users WHERE id=$1 AND status='active' FOR NO KEY UPDATE`, id)
+		}
+		if err != nil {
+			tx.Rollback()
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, User{}, NewAPIError(http.StatusNotFound, "relationship_not_found")
+			}
+			return nil, User{}, err
+		}
+	}
+	return tx, actorUser, nil
 }
 
 func isBlocked(ctx context.Context, db sqlx.QueryerContext, actor, target string) (bool, error) {
